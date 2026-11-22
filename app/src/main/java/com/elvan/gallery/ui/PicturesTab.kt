@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
@@ -360,7 +361,43 @@ private fun PinchCanvas(
         }
         val from = minOf(now.firstVisible(sNow), then.firstVisible(sThen))
         val to = maxOf(lastVisible(now, sNow), lastVisible(then, sThen))
-        for (i in from until to) {
+        // Zooming out (Samsung): the grid shrinks as one piece toward the fingers and fades, while the denser grid
+        // fades in where it will be; nothing flies across the screen. Zooming in keeps each photo growing into place.
+        if (target > columns) {
+            val anchor = now.rect.getOrNull(morph.anchor)
+            val anchorThen = then.rect.getOrNull(morph.anchor)
+            val ratio = if (anchor != null && anchorThen != null && anchor.width > 0f) anchorThen.width / anchor.width else 0.5f
+            val sc = 1f + (ratio - 1f) * p
+            val fx = morph.focus.x
+            val fy = morph.focus.y
+            fun paint(r: androidx.compose.ui.geometry.Rect, uri: String, alpha: Float) {
+                if (r.top > h || r.bottom < 0f || r.width < 1f || r.height < 1f || alpha <= 0.01f) return
+                val img = cached(uri)
+                if (img == null) { drawRect(surface, r.topLeft, r.size, alpha = alpha); return }
+                val dw = r.width.toInt().coerceAtLeast(1)
+                val dh = r.height.toInt().coerceAtLeast(1)
+                val scale = maxOf(dw / img.width.toFloat(), dh / img.height.toFloat())
+                val sw = (dw / scale).toInt().coerceIn(1, img.width)
+                val sh = (dh / scale).toInt().coerceIn(1, img.height)
+                drawImage(img, androidx.compose.ui.unit.IntOffset((img.width - sw) / 2, (img.height - sh) / 2), androidx.compose.ui.unit.IntSize(sw, sh),
+                    androidx.compose.ui.unit.IntOffset(r.left.toInt(), r.top.toInt()), androidx.compose.ui.unit.IntSize(dw, dh), alpha = alpha)
+            }
+            // The denser level first, fading in at its place
+            var j = then.firstVisible(sThen)
+            while (j < media.size && then.rect[j].top <= sThen + h) {
+                paint(then.rect[j].translate(0f, -sThen), media[j].uri, p)
+                j++
+            }
+            // This level on top, shrinking around the fingers and fading out (its visible part grows as it shrinks)
+            val reach = h / sc
+            var i = now.firstVisible(sNow + fy - fy / sc)
+            while (i < media.size && now.rect[i].top - sNow <= fy + (reach - fy / sc) + h) {
+                val r = now.rect[i].translate(0f, -sNow)
+                if ((r.top - fy) * sc + fy > h) break
+                paint(androidx.compose.ui.geometry.Rect((r.left - fx) * sc + fx, (r.top - fy) * sc + fy, (r.right - fx) * sc + fx, (r.bottom - fy) * sc + fy), media[i].uri, 1f - p)
+                i++
+            }
+        } else for (i in from until to) {
             val a = now.rect[i]
             val b = then.rect[i]
             // A photo that was off screen does not travel in from far away: it fades in where it will be,
@@ -385,14 +422,25 @@ private fun PinchCanvas(
                 androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()), androidx.compose.ui.unit.IntSize(dw, dh), alpha = fade)
         }
         // Date headings: this level's fade out where they are, the next level's fade in where they will be
+        // Zooming out, this level's headings shrink with its photos (around the fingers)
+        val outScale = if (target > columns) {
+            val an = now.rect.getOrNull(morph.anchor); val at = then.rect.getOrNull(morph.anchor)
+            1f + ((if (an != null && at != null && an.width > 0f) at.width / an.width else 0.5f) - 1f) * p
+        } else 1f
         if (!plain) for ((pl, s, alpha) in listOf(Triple(now, sNow, 1f - p), Triple(then, sThen, p))) {
             if (alpha <= 0.01f) continue
+            val sc = if (pl === now) outScale else 1f
             for (k in pl.headTop.indices) {
-                val y = pl.headTop[k] - s
+                val y0 = pl.headTop[k] - s
+                val y = (y0 - morph.focus.y) * sc + morph.focus.y
                 if (y > h || y < -padY * 3) continue
                 val label = pl.headLabel[k]
                 val layout = labels.getOrPut(label) { measurer.measure(label, style) }
-                drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(padX, y + padY), alpha = alpha)
+                val x = (padX - morph.focus.x) * sc + morph.focus.x
+                if (sc == 1f) drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(x, y + padY * sc), alpha = alpha)
+                else scale(sc, sc, androidx.compose.ui.geometry.Offset(x, y + padY * sc)) {
+                    drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(x, y + padY * sc), alpha = alpha)
+                }
             }
         }
     }

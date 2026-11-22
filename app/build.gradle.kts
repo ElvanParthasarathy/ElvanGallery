@@ -39,7 +39,7 @@ kotlin {
 
 dependencies {
     // Elvan Navil UI (the shell, header fold and snap, pills, navbar, colours, font, icons)
-    implementation("com.elvan:elvanNavil:0.1.0")
+    implementation("com.elvan:elvanNavil:0.2.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.13.1")
 

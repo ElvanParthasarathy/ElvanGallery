@@ -138,6 +138,8 @@ fun DatedMediaGrid(
     }
     val animScope = androidx.compose.runtime.rememberCoroutineScope()
     val pinch = remember { PinchZoom(animScope) }
+    val dayRows = remember(days, columns) { if (columns >= 4) emptyMap() else days.associate { it.key to justifiedRows(it.media, columns) } }
+    val thumbPx = when (columns) { 20 -> 64; 12 -> 96; 9 -> 128; 7 -> 160; 4 -> 256; else -> 320 }
     val mediaIndex = remember(media) { HashMap<String, Int>(media.size * 2).also { m -> media.forEachIndexed { i, it -> m[it.uri] = i } } }
     val pictureSlots = remember(media) { picturesSlots(media) }
     val morph = remember(plain, pictureSlots) { GridMorph(if (plain) squareSlots else pictureSlots, animScope) }
@@ -184,8 +186,8 @@ fun DatedMediaGrid(
             columns = it
             prefs.edit().putInt(columnsKey, it).apply()
         } else Modifier.pinchMorph(morph, grid, columns, columnLevels, 1) {
-            // After the change, scroll so the pinched picture is where it was
-            anchor = underFingers(morph.focus)
+            // After the change, scroll so the pinched picture is where it was; at the very top the page stays put
+            anchor = if (grid.firstVisibleItemIndex == 0) null else underFingers(morph.focus)
             columns = it
             prefs.edit().putInt(columnsKey, it).apply()
         }
@@ -199,7 +201,8 @@ fun DatedMediaGrid(
                     m, selection.active, m.uri in selection.selected,
                     onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, i) },
                     onLongClick = { selection.toggle(m.uri) },
-                    modifier = Modifier.morphTile(morph, i, columns)
+                    modifier = Modifier.morphTile(morph, i, columns),
+                    thumbPx = thumbPx
                 )
             }
             return@ElvanGrid
@@ -213,9 +216,10 @@ fun DatedMediaGrid(
                     val m = group.media[i]
                     MediaThumb(
                         m, selection.active, m.uri in selection.selected, showDuration = columns < 9,
-                        onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, order.indexOf(m.uri)) },
+                        onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, mediaIndex[m.uri] ?: 0) },
                         onLongClick = { selection.toggle(m.uri) },
-                        modifier = Modifier.zIndex(1f).morphTile(morph, mediaIndex[m.uri] ?: 0, columns)
+                        modifier = Modifier.morphTile(morph, mediaIndex[m.uri] ?: 0, columns),
+                        thumbPx = thumbPx
                     )
                 }
             }
@@ -225,7 +229,7 @@ fun DatedMediaGrid(
             item(key = day.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") {
                 Box(Modifier.graphicsLayer { alpha = if (morph.target != null) 1f - morph.progress.value else 1f }) { DayHeading(day, selection, colors) }
             }
-            val rows = justifiedRows(day.media, columns)
+            val rows = dayRows[day.key] ?: justifiedRows(day.media, columns)
             rows.forEachIndexed { rowIndex, rowMedia ->
                 item(key = "${day.key}_row_$rowIndex", contentType = "media_row") {
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -241,11 +245,12 @@ fun DatedMediaGrid(
                             rowMedia.forEachIndexed { index, m ->
                                 MediaThumb(
                                     m, selection.active, m.uri in selection.selected, showDuration = true,
-                                    onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, order.indexOf(m.uri)) },
+                                    onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, mediaIndex[m.uri] ?: 0) },
                                     onLongClick = { selection.toggle(m.uri) },
                                     square = false,
                                     modifier = (if (short) Modifier.width(rowHeight * ratios[index]) else Modifier.weight(ratios[index]))
-                                        .zIndex(1f).morphTile(morph, mediaIndex[m.uri] ?: 0, columns)
+                                        .morphTile(morph, mediaIndex[m.uri] ?: 0, columns),
+                                    thumbPx = thumbPx
                                 )
                             }
                         }
@@ -407,7 +412,7 @@ fun Modifier.pinchLevels(pinch: PinchZoom, columns: Int, levels: List<Int>, onCh
                     event.changes.forEach { it.consume() }
                     val z = zoom
                     scope.launch { pinch.scale.snapTo(z.coerceIn(0.7f, 1.4f)) }
-                }
+                } else if (pinched) event.changes.forEach { it.consume() }
             } while (event.changes.any { it.pressed })
             if (!pinched) return@awaitEachGesture
             val at = levels.indexOf(columns)

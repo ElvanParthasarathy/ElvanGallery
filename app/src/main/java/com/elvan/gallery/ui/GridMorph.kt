@@ -80,6 +80,7 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                         val p = kotlin.math.abs(kotlin.math.ln(zoom)) / kotlin.math.ln(1.7f)
                         scope.launch { morph.progress.snapTo(if (morph.target == null) 0f else p.coerceIn(0f, 1f)) }
                     }
+                    else if (pinched) event.changes.forEach { it.consume() }
                 } while (event.changes.any { it.pressed })
                 if (!pinched) return@awaitEachGesture
                 val next = morph.target

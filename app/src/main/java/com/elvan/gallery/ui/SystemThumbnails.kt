@@ -20,7 +20,7 @@ fun thumbModel(uri: String?): Any? = if (uri != null && Build.VERSION.SDK_INT >=
 
 class SystemThumbFetcher(private val data: SystemThumb, private val options: Options) : Fetcher {
     override suspend fun fetch(): FetchResult {
-        val px = (options.size.width as? Dimension.Pixels)?.px?.coerceAtLeast(96) ?: 320
+        val px = (options.size.width as? Dimension.Pixels)?.px?.coerceAtLeast(48) ?: 320
         val bitmap = options.context.contentResolver.loadThumbnail(Uri.parse(data.uri), android.util.Size(px, px), null)
         return ImageFetchResult(image = bitmap.asImage(), isSampled = true, dataSource = DataSource.DISK)
     }

@@ -44,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -124,7 +125,8 @@ private fun GridFastScroller(state: LazyGridState, modifier: Modifier = Modifier
     val thumb = 46.dp
     // Samsung: while the handle is held it turns blue, the date it has reached rides beside it, and the years are marked down the side
     val blue = Color(0xFF3E7BFA)
-    BoxWithConstraints(modifier.fillMaxHeight().width(220.dp)) {
+    val navbarSpace = (com.elvan.navil.LocalPortraitPageBottom.current ?: 24.dp) + 8.dp
+    BoxWithConstraints(modifier.fillMaxHeight().width(220.dp).statusBarsPadding().padding(top = 72.dp, bottom = navbarSpace)) {
     Box(
         Modifier.align(Alignment.TopEnd).fillMaxHeight().width(18.dp)
             .pointerInput(total, visible) {
@@ -140,8 +142,8 @@ private fun GridFastScroller(state: LazyGridState, modifier: Modifier = Modifier
             }
     )
         // Marks sit between the top buttons and the navbar, and never crowd one another
-        val top = 110.dp
-        val span = maxHeight - top - 150.dp
+        val top = 0.dp
+        val span = maxHeight - 24.dp
         var last = (-100).dp
         if (dragging) yearMarks.filter { it.second != "1970" }.forEach { (at, year) ->
             val y = top + span * at
@@ -186,17 +188,18 @@ fun LazyGridScope.mediaItems(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MediaThumb(media: Media, selecting: Boolean, selected: Boolean, onClick: () -> Unit, onLongClick: (() -> Unit)?, modifier: Modifier = Modifier, showDuration: Boolean = true, square: Boolean = true) {
+/** [thumbPx]: how big a thumbnail to decode; dense grids ask for small ones so hundreds of tiles stay cheap to draw. */
+fun MediaThumb(media: Media, selecting: Boolean, selected: Boolean, onClick: () -> Unit, onLongClick: (() -> Unit)?, modifier: Modifier = Modifier, showDuration: Boolean = true, square: Boolean = true, thumbPx: Int = 320) {
     val colors = rememberShellColors()
     val context = LocalContext.current
     Box(
         modifier.then(if (square) Modifier.aspectRatio(1f) else Modifier.fillMaxHeight())
             .clip(RoundedCornerShape(0.dp)).background(colors.surface)
-            .onGloballyPositioned { HeroBounds.rects[media.uri] = it.boundsInWindow() }
+            .onPlaced { HeroBounds.coords[media.uri] = it }
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
         AsyncImage(
-            model = ImageRequest.Builder(context).data(thumbModel(media.uri)).size(320).build(),
+            model = remember(media.uri, thumbPx) { ImageRequest.Builder(context).data(thumbModel(media.uri)).size(thumbPx).build() },
             contentDescription = media.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

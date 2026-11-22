@@ -62,6 +62,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -96,7 +97,9 @@ import java.util.Locale
 
 /** Where each tile was last drawn on screen, so a photo can grow out of its tile and shrink back into it. */
 object HeroBounds {
-    val rects = HashMap<String, androidx.compose.ui.geometry.Rect>()
+    val coords = HashMap<String, androidx.compose.ui.layout.LayoutCoordinates>()
+    fun rect(key: String): androidx.compose.ui.geometry.Rect? =
+        coords[key]?.takeIf { it.isAttached }?.boundsInWindow()
 }
 
 /**
@@ -155,7 +158,7 @@ fun ZoomViewer(
         val infoH = h * 0.52f
         val closeDistance = h * 0.12f
         val screen = androidx.compose.ui.geometry.Rect(0f, 0f, w, h)
-        val hero = models.getOrNull(pager.currentPage)?.let { heroKey(pager.currentPage) }?.let { HeroBounds.rects[it] }
+        val hero = models.getOrNull(pager.currentPage)?.let { heroKey(pager.currentPage) }?.let { HeroBounds.rect(it) }
             ?.takeIf { it.width > 0f && it.overlaps(screen) }
         // Opening: black at once; closing and pulling down: the page behind fades in
         val shown = (if (!opened && !closing) 1f else open.value) * (1f - (dragY.value / (h * 0.6f))).coerceIn(0f, 1f)

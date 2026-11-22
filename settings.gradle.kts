@@ -18,3 +18,14 @@ dependencyResolutionManagement {
 
 rootProject.name = "ElvanGallery"
 include(":app")
+
+// During development, use the standalone design-system source directly when both
+// repositories are siblings. Other environments keep using the Maven coordinate.
+val elvanNavilUi = file("../ElvanNavilUI")
+if (elvanNavilUi.isDirectory) {
+    includeBuild(elvanNavilUi) {
+        dependencySubstitution {
+            substitute(module("com.elvan:elvanNavil")).using(project(":elvanNavil"))
+        }
+    }
+}

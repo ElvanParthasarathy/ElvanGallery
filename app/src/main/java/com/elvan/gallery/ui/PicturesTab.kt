@@ -35,6 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.foundation.layout.Box
@@ -93,8 +95,8 @@ fun groupByDay(media: List<Media>): List<DayGroup> {
 
 /** Grid sizes a pinch steps through: fewest columns first. */
 // Pictures (Samsung): days in photo-shaped rows, days in 4-across squares, months at 9 across, years at 20
-private val columnLevels = listOf(3, 4, 9, 20)
-private val albumColumnLevels = listOf(3, 4, 7, 12)
+private val columnLevels = listOf(3, 4, 9)
+private val albumColumnLevels = listOf(3, 4, 7)
 
 fun savedColumns(context: Context) =
     context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE).getInt("pictures_density", 4).takeIf { it in columnLevels } ?: 4
@@ -106,9 +108,13 @@ private fun groupByPattern(media: List<Media>, pattern: String): List<DayGroup> 
 }
 
 /** Heights the layout model needs that only the screen knows: a date heading, the album cover, the count line. */
-private class Measured { var heading = 0f; var cover = 0f; var header = 0f }
+private class Measured {
+    var heading by androidx.compose.runtime.mutableFloatStateOf(0f)
+    var cover by androidx.compose.runtime.mutableFloatStateOf(0f)
+    var header by androidx.compose.runtime.mutableFloatStateOf(0f)
+}
 
-private fun thumbPxFor(level: Int) = when (level) { 20 -> 64; 12 -> 96; 9 -> 128; 7 -> 160; 4 -> 256; else -> 320 }
+private fun thumbPxFor(level: Int) = when (level) { 9 -> 128; 7 -> 160; 4 -> 256; else -> 320 }
 
 /**
  * A grid of pictures under date headings: pinch to change how many to a row, hold a picture and
@@ -143,19 +149,19 @@ fun DatedMediaGrid(
     val mediaIndex = remember(media) { HashMap<String, Int>(media.size * 2).also { m -> media.forEachIndexed { i, it -> m[it.uri] = i } } }
 
     // Groups and photo rows for each level, worked out once and kept
-    val groupCache = remember(media) { HashMap<Int, List<DayGroup>>() }
+    val groupCache = remember(media) { java.util.concurrent.ConcurrentHashMap<Int, List<DayGroup>>() }
     fun groupsFor(level: Int): List<DayGroup> = when {
         plain -> listOf(DayGroup("all", "", media))
         else -> groupCache.getOrPut(when (level) { 20 -> 20; 9 -> 9; else -> 0 }) {
             when (level) { 20 -> groupByPattern(media, "yyyy"); 9 -> groupByPattern(media, "MMM yyyy"); else -> groupByDay(media) }
         }
     }
-    val rowCache = remember(media) { HashMap<String, List<List<Media>>>() }
+    val rowCache = remember(media) { java.util.concurrent.ConcurrentHashMap<String, List<List<Media>>>() }
     fun rowsOf(g: DayGroup) = rowCache.getOrPut(g.key) { justifiedRows(g.media, 3) }
     val rowByKey = remember(media) { HashMap<String, List<Media>>() }
 
     // The exact layout of each level, as the grid will lay it out
-    val planCache = remember(media, plain) { HashMap<String, GridPlan>() }
+    val planCache = remember(media, plain) { java.util.concurrent.ConcurrentHashMap<String, GridPlan>() }
     fun plan(level: Int, width: Float): GridPlan {
         val prefix = listOfNotNull(if (cover != null) measured.cover else null, if (header != null) measured.header else null)
         val heading = if (measured.heading > 0f) measured.heading else with(density) { 42.dp.toPx() }
@@ -165,6 +171,15 @@ fun DatedMediaGrid(
         }
     }
     val animScope = androidx.compose.runtime.rememberCoroutineScope()
+    // Ready the levels either side before any pinch, off the main thread (each is a pass over every photo)
+    var gridWidth by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    LaunchedEffect(media, columns, gridWidth, measured.heading, measured.cover, measured.header) {
+        if (gridWidth <= 0f || (!plain && measured.heading <= 0f)) return@LaunchedEffect
+        val at = levels.indexOf(columns)
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            listOfNotNull(levels.getOrNull(at - 1), levels.getOrNull(at + 1), columns).forEach { plan(it, gridWidth) }
+        }
+    }
     val morph = remember(media, plain) { GridMorph({ index, level, width, _ -> plan(level, width).rect.getOrNull(index)?.takeIf { it.width > 0f } ?: androidx.compose.ui.geometry.Rect(0f, 0f, 1f, 1f) }, animScope) }
 
     // As a pinch begins: the photo under the fingers (or the nearest), where on it they are, and where the page is
@@ -228,16 +243,14 @@ fun DatedMediaGrid(
                 onClick = { if (!live) Unit else if (selection.active) selection.toggle(m.uri) else onOpen(media, i) },
                 onLongClick = if (live) ({ selection.toggle(m.uri) }) else null,
                 square = square,
-                modifier = if (live) mod.morphTile(morph, i, level) else mod,
+                modifier = mod,
                 thumbPx = tp, trackHero = live
             )
         }
         groupsFor(level).forEach { group ->
             if (!plain) item(key = group.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") {
                 Box(
-                    Modifier.then(if (live) Modifier.onSizeChanged { measured.heading = it.height.toFloat() }.graphicsLayer {
-                        alpha = morph.target.let { t -> if (t != null && t != level) 1f - morph.progress.value else 1f }
-                    } else Modifier)
+                    if (live) Modifier.onSizeChanged { measured.heading = it.height.toFloat() } else Modifier
                 ) { DayHeading(group, selection, colors) }
             }
             if (squares) {
@@ -273,35 +286,132 @@ fun DatedMediaGrid(
     }
 
     val gapFor = { level: Int -> if (plain || level >= 4) 1.dp else 0.5.dp }
-    ElvanGrid(
+    Box(Modifier.fillMaxSize()) {
+    QuietWhilePinching(morph) { ElvanGrid(
         grid, columns = if (plain || columns >= 4) columns else 1,
         dateLabel = { key -> dateOf[key]?.let { bubbleDate(it) } }, yearMarks = years, gap = gapFor(columns), sidePadding = 0.dp,
-        modifier = Modifier.onPlaced { gridCoords[0] = it }
+        modifier = Modifier.onPlaced { gridCoords[0] = it; gridWidth = it.size.width.toFloat() }
+            // Hidden (still taking the touch) while PinchCanvas draws the pinch; shown again the frame the new level is in place
+            .graphicsLayer { alpha = morph.target.let { t -> if (t != null && t != columns && morph.scrollFor != null) 0f else 1f } }
             .pinchMorph(morph, grid, columns, levels, 1 + (if (cover != null) 1 else 0) + (if (header != null) 1 else 0)) { next ->
                 // The new level starts exactly where the photos were carried to, in the same frame
                 morph.sThen[next]?.let { s -> plan(next, morph.width).itemAt(s).let { (i, o) -> grid.requestScrollToItem(i, o) } }
                 columns = next
                 prefs.edit().putInt(columnsKey, next).apply()
             },
-        behind = {
-            // The next level, faint behind the moving photos, already scrolled to where the page will land
-            val t = morph.target
-            val s = t?.let { morph.sThen[it] }
-            if (t != null && t != columns && s != null && morph.width > 0f) androidx.compose.runtime.key(t) {
-                val (i, o) = remember { plan(t, morph.width).itemAt(s) }
-                val preview = androidx.compose.foundation.lazy.grid.rememberLazyGridState(i, o)
-                ElvanGridLayer(
-                    preview, if (plain || t >= 4) t else 1,
-                    Modifier.fillMaxSize().graphicsLayer { alpha = (morph.progress.value * 1.6f).coerceAtMost(1f) },
-                    gapFor(t), 0.dp, userScroll = false
-                ) { levelContent(t, live = false) }
+    ) { levelContent(columns, live = true) } }
+    PinchCanvas(morph, columns, { plan(it, morph.width) }, media, colors.surface, colors.background, colors.textPrimary, plain)
+    }
+}
+
+/**
+ * The whole pinch as one drawing, over the (hidden) grid: every photo on screen now or at the next level is painted
+ * from Coil's memory cache part way between its place now and its place then, and the date headings of the two levels
+ * cross-fade. One display list instead of hundreds of moving tiles, so it keeps up on mid-range phones.
+ * Photos not in memory yet are grey and load in the background.
+ */
+@Composable
+private fun PinchCanvas(
+    morph: GridMorph, columns: Int, plan: (Int) -> GridPlan, media: List<Media>,
+    surface: Color, background: Color, textColor: Color, plain: Boolean
+) {
+    val target = morph.target
+    val sThen = target?.let { morph.sThen[it] }
+    if (target == null || target == columns || sThen == null || morph.scrollFor == null || morph.width <= 0f) return
+    val context = LocalContext.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val loader = coil3.SingletonImageLoader.get(context)
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val style = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = textColor)
+    val now = remember(columns, morph.width) { plan(columns) }
+    val then = remember(target, morph.width) { plan(target) }
+    val sNow = morph.sNow
+    var loaded by remember { mutableIntStateOf(0) }
+    var height by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    val bitmaps = remember { HashMap<String, androidx.compose.ui.graphics.ImageBitmap>() }
+    val labels = remember { HashMap<String, androidx.compose.ui.text.TextLayoutResult>() }
+    fun cached(uri: String): androidx.compose.ui.graphics.ImageBitmap? = bitmaps[uri]
+        ?: (loader.memoryCache?.get(thumbPlaceholder(uri))?.image as? coil3.BitmapImage)?.bitmap?.asImageBitmap()?.also { bitmaps[uri] = it }
+    // The photos the next level shows that are not in memory: load them, each arrival redraws
+    LaunchedEffect(target, height) {
+        if (height <= 0f) return@LaunchedEffect
+        var i = then.firstVisible(sThen)
+        while (i < media.size && then.rect[i].top <= sThen + height) {
+            val uri = media[i].uri
+            if (cached(uri) == null) loader.enqueue(
+                coil3.request.ImageRequest.Builder(context).data(thumbModel(uri)).size(thumbPxFor(target))
+                    .listener(onSuccess = { _, _ -> loaded++ }).build()
+            )
+            i++
+        }
+    }
+    val padX = with(density) { 10.dp.toPx() }
+    val padY = with(density) { 14.dp.toPx() }
+    androidx.compose.foundation.Canvas(Modifier.fillMaxSize().onSizeChanged { height = it.height.toFloat() }) {
+        loaded
+        val p = morph.progress.value
+        val h = size.height
+        drawRect(background)
+        // Photos on screen at either level (both ranges hold the photo under the fingers, so together they are one run)
+        fun lastVisible(pl: GridPlan, s: Float): Int {
+            var i = pl.firstVisible(s)
+            while (i < media.size && pl.rect[i].top <= s + h) i++
+            return i
+        }
+        val from = minOf(now.firstVisible(sNow), then.firstVisible(sThen))
+        val to = maxOf(lastVisible(now, sNow), lastVisible(then, sThen))
+        for (i in from until to) {
+            val a = now.rect[i]
+            val b = then.rect[i]
+            // A photo that was off screen does not travel in from far away: it fades in where it will be,
+            // filling the space the shrinking photos leave
+            val wasOff = a.top - sNow > h || a.bottom - sNow < 0f
+            val k = if (wasOff) 1f else p
+            val fade = if (wasOff) (p * 2.5f).coerceAtMost(1f) else 1f
+            val left = a.left + (b.left - a.left) * k
+            val top = (a.top - sNow) + ((b.top - sThen) - (a.top - sNow)) * k
+            val w = a.width + (b.width - a.width) * k
+            val ht = a.height + (b.height - a.height) * k
+            if (top > h || top + ht < 0f || w < 1f || ht < 1f || fade <= 0.01f) continue
+            val img = cached(media[i].uri)
+            if (img == null) { drawRect(surface, androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Size(w, ht), alpha = fade); continue }
+            val dw = w.toInt().coerceAtLeast(1)
+            val dh = ht.toInt().coerceAtLeast(1)
+            // Centre crop, as the tiles draw
+            val scale = maxOf(dw / img.width.toFloat(), dh / img.height.toFloat())
+            val sw = (dw / scale).toInt().coerceIn(1, img.width)
+            val sh = (dh / scale).toInt().coerceIn(1, img.height)
+            drawImage(img, androidx.compose.ui.unit.IntOffset((img.width - sw) / 2, (img.height - sh) / 2), androidx.compose.ui.unit.IntSize(sw, sh),
+                androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()), androidx.compose.ui.unit.IntSize(dw, dh), alpha = fade)
+        }
+        // Date headings: this level's fade out where they are, the next level's fade in where they will be
+        if (!plain) for ((pl, s, alpha) in listOf(Triple(now, sNow, 1f - p), Triple(then, sThen, p))) {
+            if (alpha <= 0.01f) continue
+            for (k in pl.headTop.indices) {
+                val y = pl.headTop[k] - s
+                if (y > h || y < -padY * 3) continue
+                val label = pl.headLabel[k]
+                val layout = labels.getOrPut(label) { measurer.measure(label, style) }
+                drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(padX, y + padY), alpha = alpha)
             }
         }
-    ) { levelContent(columns, live = true) }
+    }
 }
 
 /** One level of a photo grid, laid out as the lazy grid lays it out: every item's top and every photo's rectangle, in content pixels. */
-class GridPlan(private val tops: FloatArray, val rect: Array<androidx.compose.ui.geometry.Rect>) {
+class GridPlan(
+    private val tops: FloatArray, val rect: Array<androidx.compose.ui.geometry.Rect>,
+    /** Each date heading's top and text, top to bottom. */
+    val headTop: FloatArray = FloatArray(0), val headLabel: List<String> = emptyList()
+) {
+    /** The first photo (in order, which is top to bottom) whose bottom is below [scroll]. */
+    fun firstVisible(scroll: Float): Int {
+        var lo = 0
+        var hi = rect.size
+        while (lo < hi) { val mid = (lo + hi) / 2; if (rect[mid].bottom < scroll) lo = mid + 1 else hi = mid }
+        return lo
+    }
+
     /** The item to scroll to, and how far into it, so the content [scroll] pixels down is at the top of the screen. */
     fun itemAt(scroll: Float): Pair<Int, Int> {
         var lo = 0
@@ -323,6 +433,8 @@ internal fun androidx.compose.ui.unit.Density.buildPlan(
     val gapDp = if (plain || level >= 4) 1.dp else 0.5.dp
     val gap = gapDp.roundToPx().toFloat()
     val tops = ArrayList<Float>(media.size + groups.size + 4)
+    val headTops = ArrayList<Float>(groups.size)
+    val headLabels = ArrayList<String>(groups.size)
     val rects = Array(media.size) { androidx.compose.ui.geometry.Rect.Zero }
     var y = 0f
     tops += 0f
@@ -338,7 +450,7 @@ internal fun androidx.compose.ui.unit.Density.buildPlan(
     val lineH = slot + if (rem > 0) 1 else 0
     val rowGap = 0.5.dp.roundToPx().toFloat()
     groups.forEach { g ->
-        if (!plain) { tops += y; y += heading + gap }
+        if (!plain) { tops += y; headTops += y; headLabels += g.label; y += heading + gap }
         if (squares) {
             g.media.forEachIndexed { k, m ->
                 val c = k % level
@@ -367,7 +479,7 @@ internal fun androidx.compose.ui.unit.Density.buildPlan(
             }
         }
     }
-    return GridPlan(tops.toFloatArray(), rects)
+    return GridPlan(tops.toFloatArray(), rects, headTops.toFloatArray(), headLabels)
 }
 
 private fun Media.displayRatio(): Float =

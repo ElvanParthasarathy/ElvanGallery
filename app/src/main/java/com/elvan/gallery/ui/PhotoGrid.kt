@@ -195,7 +195,7 @@ fun MediaThumb(media: Media, selecting: Boolean, selected: Boolean, onClick: () 
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
         AsyncImage(
-            model = remember(media.uri, thumbPx) { ImageRequest.Builder(context).data(thumbModel(media.uri)).size(thumbPx).build() },
+            model = remember(media.uri, thumbPx) { ImageRequest.Builder(context).data(thumbModel(media.uri)).size(thumbPx).placeholderMemoryCacheKey(thumbPlaceholder(media.uri)).build() },
             contentDescription = media.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

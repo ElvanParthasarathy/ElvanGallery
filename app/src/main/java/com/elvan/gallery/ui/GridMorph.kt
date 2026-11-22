@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -145,4 +146,16 @@ fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int): Modifier = g
         scaleY = 1f + (then.height / now.height - 1f) * p
     }
     transformOrigin = TransformOrigin(0f, 0f)
+}
+
+/**
+ * While a pinch moves the tiles, the grid is left out of the accessibility tree: with an accessibility service on,
+ * every frame would otherwise re-describe hundreds of moving tiles. Readers get the settled grid once it lands.
+ * Only this wrapper recomposes when the pinch starts and ends; [content] is skipped.
+ */
+@androidx.compose.runtime.Composable
+fun QuietWhilePinching(morph: GridMorph, content: @androidx.compose.runtime.Composable () -> Unit) {
+    androidx.compose.foundation.layout.Box(
+        if (morph.target != null) Modifier.clearAndSetSemantics { } else Modifier
+    ) { content() }
 }

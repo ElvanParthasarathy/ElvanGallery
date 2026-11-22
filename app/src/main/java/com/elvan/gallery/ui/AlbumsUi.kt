@@ -110,6 +110,7 @@ fun AlbumsTab(library: GalleryLibrary, grid: LazyGridState, nav: Navigator) {
     val morph = remember { GridMorph(albumSlots, animScope) }
     // The shell's spacer and the "All albums" heading come before the first album
     val firstTile = if (model.choosingEssential) 1 else 2
+    QuietWhilePinching(morph) {
     ElvanGrid(grid, columns = columns, gap = if (columns == 1) 0.dp else 10.dp, sidePadding = 10.dp,
         modifier = Modifier.pinchMorph(morph, grid, columns, albumLevels, firstTile) { columns = it; prefs.edit().putInt("albums_columns", it).apply() }
             .dragToArrange(grid, model, drag)) {
@@ -117,6 +118,7 @@ fun AlbumsTab(library: GalleryLibrary, grid: LazyGridState, nav: Navigator) {
             AlbumsHeading(model.onlyEssential) { nav.open(Page.AllAlbums) }
         }
         albumTiles(model, model.visible, nav, grid, drag, asList = columns == 1, morph = morph, columns = columns)
+    }
     }
     AlbumDialogs(model, library)
 }
@@ -262,7 +264,7 @@ private fun GroupCover(group: AlbumGroup, colors: ShellColors) {
 @Composable
 fun Thumb(uri: String?, modifier: Modifier) {
     AsyncImage(
-        model = ImageRequest.Builder(LocalContext.current).data(thumbModel(uri)).size(360).build(),
+        model = ImageRequest.Builder(LocalContext.current).data(thumbModel(uri)).size(360).apply { if (uri != null) placeholderMemoryCacheKey(thumbPlaceholder(uri)) }.build(),
         contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier
     )
 }

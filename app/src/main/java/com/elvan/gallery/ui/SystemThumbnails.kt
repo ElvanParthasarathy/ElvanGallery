@@ -21,7 +21,10 @@ fun thumbModel(uri: String?): Any? = if (uri != null && Build.VERSION.SDK_INT >=
 class SystemThumbFetcher(private val data: SystemThumb, private val options: Options) : Fetcher {
     override suspend fun fetch(): FetchResult {
         val px = (options.size.width as? Dimension.Pixels)?.px?.coerceAtLeast(48) ?: 320
-        val bitmap = options.context.contentResolver.loadThumbnail(Uri.parse(data.uri), android.util.Size(px, px), null)
+        val loaded = options.context.contentResolver.loadThumbnail(Uri.parse(data.uri), android.util.Size(px, px), null)
+        // Moved to the GPU once here: a plain bitmap is copied to the GPU again whenever the GPU's cache drops it,
+        // which happens constantly with hundreds of thumbnails moving in a pinch
+        val bitmap = loaded.copy(android.graphics.Bitmap.Config.HARDWARE, false)?.also { loaded.recycle() } ?: loaded
         return ImageFetchResult(image = bitmap.asImage(), isSampled = true, dataSource = DataSource.DISK)
     }
 
@@ -31,7 +34,16 @@ class SystemThumbFetcher(private val data: SystemThumb, private val options: Opt
     }
 }
 
-/** Lets Coil keep these in its memory cache (no key means no caching). */
+/**
+ * Lets Coil keep these in its memory cache (no key means no caching). One key per photo, not per size: Coil reuses a
+ * bigger cached copy for a smaller tile, and [thumbPlaceholder] shows a smaller one while a bigger loads, so a tile
+ * never goes blank when a pinch changes its size.
+ */
 class SystemThumbKeyer : Keyer<SystemThumb> {
-    override fun key(data: SystemThumb, options: Options) = "thumb:${data.uri}:${options.size}"
+    override fun key(data: SystemThumb, options: Options) = thumbKey(data.uri)
 }
+
+fun thumbKey(uri: String) = "thumb:$uri"
+
+/** Whatever copy of this photo is already in memory, to show until the requested one is ready. */
+fun thumbPlaceholder(uri: String) = coil3.memory.MemoryCache.Key(thumbKey(uri))

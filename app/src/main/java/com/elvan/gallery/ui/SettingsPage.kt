@@ -59,7 +59,7 @@ fun SettingsPage(library: GalleryLibrary, nav: Navigator) {
         if (count != null) library.reload()
     }
 
-    ElvanShell(scrollState = list, title = "Settings", showNavbar = false, onBack = nav::back) {
+    ElvanShell(scrollState = list, title = "Gallery settings", showNavbar = false, onBack = nav::back, collapsedOnly = true) {
         ElvanLazyColumn(state = list) {
             item(key = "shell_top_spacer") { Spacer(Modifier.height(1.dp)) }
             item(key = "ui") {

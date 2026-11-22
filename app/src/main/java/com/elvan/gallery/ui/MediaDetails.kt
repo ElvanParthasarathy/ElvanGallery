@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -54,15 +55,17 @@ fun MediaDetails(media: Media) {
     val details by produceState<Details?>(null, media.uri) { value = withContext(Dispatchers.IO) { readDetails(context, media) } }
     val d = details ?: return
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 22.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 26.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text(d.date, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary)
-        Text(d.name, fontSize = 14.sp, color = colors.textSecondary)
-        Text(d.path, fontSize = 13.sp, color = colors.textTertiary)
-        if (d.device != null) Text(d.device, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary, modifier = Modifier.padding(top = 14.dp))
-        Row { Text(d.sizeLine, fontSize = 13.sp, color = colors.textSecondary) }
-        if (d.cameraLine != null) Text(d.cameraLine, fontSize = 13.sp, color = colors.textSecondary)
+        // Samsung's layout: bold date, then grey file and folder; a gap; bold camera, then grey size and exposure lines
+        val grey = Color(0xFFABABAB)
+        Text(d.date, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Text(d.name, fontSize = 14.sp, color = grey)
+        Text(d.path, fontSize = 14.sp, color = grey)
+        if (d.device != null) Text(d.device, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.padding(top = 22.dp))
+        Text(d.sizeLine, fontSize = 15.sp, color = grey, modifier = if (d.device == null) Modifier.padding(top = 22.dp) else Modifier)
+        if (d.cameraLine != null) Text(d.cameraLine, fontSize = 15.sp, color = grey)
     }
 }
 
@@ -87,26 +90,26 @@ private fun readDetails(context: Context, media: Media): Details {
         resolver.openInputStream(uri)?.use { exif = ExifInterface(it) }
     } catch (_: Exception) {}
     val e = exif
-    val model = listOfNotNull(e?.getAttribute(ExifInterface.TAG_MAKE), e?.getAttribute(ExifInterface.TAG_MODEL)).distinct().joinToString(" ").ifBlank { null }
+    val model = e?.getAttribute(ExifInterface.TAG_MODEL)?.ifBlank { null }
     val mp = if (bounds.outWidth > 0) "${"%.0f".format(bounds.outWidth * bounds.outHeight / 1_000_000.0)}MP" else null
     val sizeLine = listOfNotNull(
         "%.2f MB".format(size / (1024.0 * 1024.0)),
         if (bounds.outWidth > 0) "${bounds.outWidth}x${bounds.outHeight}" else null,
         mp,
         media.duration?.let { formatDuration(it) }
-    ).joinToString("   |   ")
+    ).joinToString("  |  ")
     val camera = e?.let {
         listOfNotNull(
             it.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS)?.let { v -> "ISO $v" },
             it.getAttributeDouble(ExifInterface.TAG_FOCAL_LENGTH, 0.0).takeIf { v -> v > 0 }?.let { v -> "${"%.0f".format(v)}mm" },
             it.getAttributeDouble(ExifInterface.TAG_F_NUMBER, 0.0).takeIf { v -> v > 0 }?.let { v -> "F$v" },
             it.getAttributeDouble(ExifInterface.TAG_EXPOSURE_TIME, 0.0).takeIf { v -> v > 0 }?.let { v -> if (v < 1) "1/${"%.0f".format(1 / v)} s" else "$v s" }
-        ).joinToString("   |   ").ifBlank { null }
+        ).joinToString("  |  ").ifBlank { null }
     }
     return Details(
-        date = if (taken > 0) SimpleDateFormat("EEE, d MMMM yyyy · h:mm a", Locale.getDefault()).format(Date(taken)) else "Unknown date",
+        date = if (taken > 0) SimpleDateFormat("EEEE, d MMMM yyyy · h:mm a", Locale.getDefault()).format(Date(taken)) else "Unknown date",
         name = media.name,
-        path = path?.substringBeforeLast("/") ?: "",
+        path = path?.substringBeforeLast("/")?.replace("/storage/emulated/0", "/Internal storage") ?: "",
         device = model,
         sizeLine = sizeLine,
         cameraLine = camera

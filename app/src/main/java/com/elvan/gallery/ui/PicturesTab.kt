@@ -5,8 +5,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.isSpecified
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
@@ -22,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -63,7 +70,7 @@ fun groupByDay(media: List<Media>): List<DayGroup> {
     val cal = Calendar.getInstance()
     val today = cal.get(Calendar.YEAR) * 1000 + cal.get(Calendar.DAY_OF_YEAR)
     val year = cal.get(Calendar.YEAR)
-    val sameYear = SimpleDateFormat("EEE, d MMM", Locale.ENGLISH)
+    val sameYear = SimpleDateFormat("d MMM", Locale.ENGLISH) // Samsung: "20 Nov", no weekday
     val otherYear = SimpleDateFormat("d MMM yyyy", Locale.ENGLISH)
     return media.groupBy {
         cal.timeInMillis = (it.dateAdded ?: 0L) * 1000
@@ -81,10 +88,18 @@ fun groupByDay(media: List<Media>): List<DayGroup> {
 }
 
 /** Grid sizes a pinch steps through: fewest columns first. */
-private val columnLevels = listOf(2, 3, 4, 6, 8)
+// Pictures (Samsung): days in photo-shaped rows, days in 4-across squares, months at 9 across, years at 20
+private val columnLevels = listOf(3, 4, 9, 20)
+private val albumColumnLevels = listOf(3, 4, 7, 12)
 
 fun savedColumns(context: Context) =
-    context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE).getInt("pictures_columns", 4).takeIf { it in columnLevels } ?: 4
+    context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE).getInt("pictures_density", 4).takeIf { it in columnLevels } ?: 4
+
+/** Groups by a date pattern ("MMM yyyy" for months, "yyyy" for years), newest first as the media already is. */
+private fun groupByPattern(media: List<Media>, pattern: String): List<DayGroup> {
+    val f = SimpleDateFormat(pattern, Locale.ENGLISH)
+    return media.groupBy { f.format(Date((it.dateAdded ?: 0L) * 1000)) }.map { (label, items) -> DayGroup("$pattern:$label", label, items) }
+}
 
 /**
  * A grid of pictures under date headings: pinch to change how many to a row, hold a picture and
@@ -96,38 +111,136 @@ fun DatedMediaGrid(
     grid: LazyGridState,
     selection: MediaSelection,
     header: String? = null,
+    /** An album: an even square grid (4 across to start) with no date headings. */
+    plain: Boolean = false,
+    /** Drawn full width above everything else (an album's cover). */
+    cover: (@Composable () -> Unit)? = null,
     onOpen: (List<Media>, Int) -> Unit
 ) {
     val context = LocalContext.current
     val colors = rememberShellColors()
-    var columns by remember { mutableStateOf(savedColumns(context)) }
-    val days = remember(media) { groupByDay(media) }
     val order = remember(media) { media.map { it.uri } }
+    val prefs = remember(context) { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
+    val columnsKey = if (plain) "album_columns" else "pictures_density"
+    var columns by remember { mutableIntStateOf(if (plain) prefs.getInt(columnsKey, 4).takeIf { it in albumColumnLevels } ?: 4 else savedColumns(context)) }
+    // Days keep their own proportions in rows; months and years are even squares under their own headings
+    val squares = plain || columns >= 4
+    val days = remember(media, columns) {
+        when {
+            plain -> emptyList()
+            columns == 20 -> groupByPattern(media, "yyyy")
+            columns == 9 -> groupByPattern(media, "MMM yyyy")
+            else -> groupByDay(media)
+        }
+    }
+    val pinch = remember { PinchZoom() }
+    val morph = remember { GridMorph(squareSlots) }
+    // For the fast-scroll bubble: each picture's (and each day row's) date, and where each year begins
+    val dateOf = remember(media, days) {
+        val map = HashMap<Any, Media>()
+        media.forEach { map[it.uri] = it }
+        days.forEach { d -> justifiedRows(d.media, columns).forEachIndexed { i, row -> map["${d.key}_row_$i"] = row.first() } }
+        map
+    }
+    val years = remember(media) {
+        val f = SimpleDateFormat("yyyy", Locale.ENGLISH)
+        if (media.isEmpty()) emptyList() else media.withIndex().groupBy { f.format(Date((it.value.dateAdded ?: 0L) * 1000)) }
+            .map { (y, items) -> items.first().index.toFloat() / media.size to y }
+    }
 
     ElvanGrid(
-        grid, columns = columns,
-        modifier = Modifier
-            .pinchColumns(columns) { next ->
-                columns = next
-                context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE).edit().putInt("pictures_columns", next).apply()
-            }
-            .gridDragSelect(grid, order, selection)
+        grid, columns = if (squares) columns else 1,
+        dateLabel = { key -> dateOf[key]?.let { bubbleDate(it) } }, yearMarks = years, gap = if (squares) 1.dp else 0.5.dp, sidePadding = 0.dp,
+        modifier = if (plain) Modifier.pinchMorph(morph, grid, columns, albumColumnLevels, 1 + (if (cover != null) 1 else 0) + (if (header != null) 1 else 0)) {
+            columns = it
+            prefs.edit().putInt(columnsKey, it).apply()
+        } else Modifier.pinchLevels(pinch, columns, columnLevels) {
+            columns = it
+            prefs.edit().putInt(columnsKey, it).apply()
+        }.pinchScaled(pinch)
     ) {
+        if (cover != null) item(key = "page_cover", span = { GridItemSpan(maxLineSpan) }) { cover() }
         if (header != null) item(key = "page_header", span = { GridItemSpan(maxLineSpan) }) { CountLine(header) }
+        if (plain) {
+            items(media.size, key = { media[it].uri }, contentType = { "media" }) { i ->
+                val m = media[i]
+                MediaThumb(
+                    m, selection.active, m.uri in selection.selected,
+                    onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, i) },
+                    onLongClick = { selection.toggle(m.uri) },
+                    modifier = Modifier.morphTile(morph, i, columns)
+                )
+            }
+            return@ElvanGrid
+        }
+        if (squares) {
+            days.forEach { group ->
+                item(key = group.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") { DayHeading(group, selection, colors) }
+                items(group.media.size, key = { group.media[it].uri }, contentType = { "media" }) { i ->
+                    val m = group.media[i]
+                    MediaThumb(
+                        m, selection.active, m.uri in selection.selected, showDuration = columns < 9,
+                        onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, order.indexOf(m.uri)) },
+                        onLongClick = { selection.toggle(m.uri) }
+                    )
+                }
+            }
+            return@ElvanGrid
+        }
         days.forEach { day ->
             item(key = day.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") {
                 DayHeading(day, selection, colors)
             }
-            items(day.media, key = { it.uri }, contentType = { "media" }) { m ->
-                MediaThumb(
-                    m, selection.active, m.uri in selection.selected, showDuration = columns < 6,
-                    onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, order.indexOf(m.uri)) },
-                    onLongClick = null,
-                    modifier = Modifier.animateItem()
-                )
+            val rows = justifiedRows(day.media, columns)
+            rows.forEachIndexed { rowIndex, rowMedia ->
+                item(key = "${day.key}_row_$rowIndex", contentType = "media_row") {
+                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                        val ratios = rowMedia.map { it.displayRatio() }
+                        // A day's short last row keeps the usual height and sits to the left, as Samsung's does
+                        val usual = columns * 0.72f
+                        val short = rowIndex == rows.lastIndex && rowMedia.size < columns && ratios.sum() < usual * 0.8f
+                        val rowHeight = maxWidth / (if (short) usual else ratios.sum().coerceAtLeast(0.5f))
+                        Row(
+                            Modifier.fillMaxWidth().height(rowHeight),
+                            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(0.5.dp)
+                        ) {
+                            rowMedia.forEachIndexed { index, m ->
+                                MediaThumb(
+                                    m, selection.active, m.uri in selection.selected, showDuration = true,
+                                    onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, order.indexOf(m.uri)) },
+                                    onLongClick = { selection.toggle(m.uri) },
+                                    square = false,
+                                    modifier = if (short) Modifier.width(rowHeight * ratios[index]) else Modifier.weight(ratios[index])
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+private fun Media.displayRatio(): Float =
+    if (width > 0 && height > 0) (width.toFloat() / height.toFloat()).coerceIn(0.42f, 2.4f) else 1f
+
+/** Samsung Gallery keeps original thumbnail proportions and closes a row once it fills the screen. */
+private fun justifiedRows(media: List<Media>, targetColumns: Int): List<List<Media>> {
+    val rows = mutableListOf<List<Media>>()
+    var current = mutableListOf<Media>()
+    var ratio = 0f
+    media.forEach { item ->
+        current += item
+        ratio += item.displayRatio()
+        val targetRatio = targetColumns * 0.72f
+        if ((current.size >= 2 && ratio >= targetRatio) || current.size == targetColumns) {
+            rows += current
+            current = mutableListOf()
+            ratio = 0f
+        }
+    }
+    if (current.isNotEmpty()) rows += current
+    return rows
 }
 
 @Composable
@@ -147,22 +260,80 @@ private fun DayHeading(day: DayGroup, selection: MediaSelection, colors: com.elv
     }
 }
 
-/** Two fingers spread for bigger pictures (fewer to a row), pinch for more; one finger is left to the scroll. */
-private fun Modifier.pinchColumns(columns: Int, onChange: (Int) -> Unit): Modifier = pointerInput(columns) {
-    awaitEachGesture {
-        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        var zoom = 1f
-        var changed = false
-        do {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
-            if (event.changes.count { it.pressed } > 1) {
-                zoom *= event.calculateZoom()
-                event.changes.forEach { it.consume() }
-                val at = columnLevels.indexOf(columns)
-                if (!changed && zoom > 1.25f && at > 0) { onChange(columnLevels[at - 1]); changed = true }
-                if (!changed && zoom < 0.8f && at < columnLevels.lastIndex) { onChange(columnLevels[at + 1]); changed = true }
+private fun bubbleDate(m: Media): String {
+    val cal = Calendar.getInstance()
+    val now = cal.get(Calendar.YEAR) * 1000 + cal.get(Calendar.DAY_OF_YEAR)
+    val year = cal.get(Calendar.YEAR)
+    cal.timeInMillis = (m.dateAdded ?: 0L) * 1000
+    val day = cal.get(Calendar.YEAR) * 1000 + cal.get(Calendar.DAY_OF_YEAR)
+    return when {
+        day == now -> "Today"
+        cal.get(Calendar.YEAR) == year -> SimpleDateFormat("d MMM", Locale.ENGLISH).format(cal.time)
+        else -> SimpleDateFormat("d MMM yyyy", Locale.ENGLISH).format(cal.time)
+    }
+}
+
+private val squareSlots = GridSlots { index, columns, width, _ ->
+    val gap = 1.dp.toPx()
+    val w = (width - (columns - 1) * gap) / columns
+    val x = (index % columns) * (w + gap)
+    val y = (index / columns) * (w + gap)
+    androidx.compose.ui.geometry.Rect(x, y, x + w, y + w)
+}
+
+/** How far the fingers have pinched, and where: the grid is drawn scaled by this so it follows them. */
+class PinchZoom {
+    val scale = androidx.compose.animation.core.Animatable(1f)
+    var origin by androidx.compose.runtime.mutableStateOf(androidx.compose.ui.graphics.TransformOrigin.Center)
+}
+
+fun Modifier.pinchScaled(pinch: PinchZoom): Modifier = graphicsLayer {
+    scaleX = pinch.scale.value; scaleY = pinch.scale.value; transformOrigin = pinch.origin
+}
+
+/**
+ * Two fingers: the grid grows or shrinks under them as they move. On lifting, a spread or pinch past about a fifth steps
+ * to the next level; the new grid starts at the size the fingers left it and eases into place, so the change reads as
+ * one continuous zoom. One finger is left to the scroll.
+ */
+fun Modifier.pinchLevels(pinch: PinchZoom, columns: Int, levels: List<Int>, onChange: (Int) -> Unit): Modifier = pointerInput(columns, levels) {
+    val settle = androidx.compose.animation.core.spring<Float>(dampingRatio = 0.9f, stiffness = 380f)
+    coroutineScope {
+        val scope = this
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            var zoom = 1f
+            var pinched = false
+            do {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.changes.count { it.pressed } > 1) {
+                    pinched = true
+                    zoom = (zoom * event.calculateZoom()).coerceIn(0.5f, 2f)
+                    val c = event.calculateCentroid(useCurrent = true)
+                    if (c.isSpecified && size.width > 0) pinch.origin = androidx.compose.ui.graphics.TransformOrigin(c.x / size.width, c.y / size.height)
+                    event.changes.forEach { it.consume() }
+                    val z = zoom
+                    scope.launch { pinch.scale.snapTo(z.coerceIn(0.7f, 1.4f)) }
+                }
+            } while (event.changes.any { it.pressed })
+            if (!pinched) return@awaitEachGesture
+            val at = levels.indexOf(columns)
+            val next = when {
+                zoom > 1.2f && at > 0 -> levels[at - 1]
+                zoom < 0.83f && at in 0 until levels.lastIndex -> levels[at + 1]
+                else -> null
             }
-        } while (event.changes.any { it.pressed })
+            val shown = zoom.coerceIn(0.7f, 1.4f)
+            scope.launch {
+                if (next != null) {
+                    onChange(next)
+                    // A list (1) is drawn about as dense as 4 across
+                    fun across(c: Int) = if (c == 1) 4f else c.toFloat()
+                    pinch.scale.snapTo((shown * across(next) / across(columns)).coerceIn(0.4f, 2.5f))
+                }
+                pinch.scale.animateTo(1f, settle)
+            }
+        }
     }
 }
 
@@ -263,13 +434,13 @@ fun PictureSelectionBar(selection: MediaSelection, library: GalleryLibrary) {
             android.widget.Toast.makeText(context, "Added to Favourites", android.widget.Toast.LENGTH_SHORT).show()
             selection.clear()
         }),
-        com.elvan.navil.ElvanFloatingAction("Delete", com.elvan.navil.MaterialSymbols.Rounded.Delete, {
+        com.elvan.navil.ElvanFloatingAction("Delete", com.composables.icons.materialsymbols.MaterialSymbols.Rounded.Delete, {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) trash.launch(
                 androidx.activity.result.IntentSenderRequest.Builder(
                     android.provider.MediaStore.createTrashRequest(context.contentResolver, uris.map { android.net.Uri.parse(it) }, true).intentSender
                 ).build()
             ) else confirm = true
-        }, isDestructive = true)
+        })
     )
     com.elvan.navil.ElvanFloatingActionBar(actions)
     if (confirm) ElvanDialog("Delete ${uris.size} item(s)?", "They are deleted from this device.", "Delete", destructive = true, onDismiss = { confirm = false }) {

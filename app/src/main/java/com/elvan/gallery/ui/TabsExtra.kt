@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
@@ -72,32 +73,31 @@ fun MenuCard(visible: Boolean, onDismiss: () -> Unit, onPick: (Page?) -> Unit) {
     val colors = rememberShellColors()
     val bottom = (LocalPortraitPageBottom.current ?: 24.dp)
     AnimatedVisibility(visible, enter = fadeIn(tween(180)), exit = fadeOut(tween(160))) {
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.32f)).clickable(MutableInteractionSource(), null, onClick = onDismiss))
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)).clickable(MutableInteractionSource(), null, onClick = onDismiss))
     }
-    Box(Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp, bottom = bottom), contentAlignment = Alignment.BottomCenter) {
+    // Samsung's Menu: the page dims, the navbar steps aside and a card of eight round buttons rises in its place
+    Box(Modifier.fillMaxSize().navigationBarsPadding().padding(start = 10.dp, end = 10.dp, bottom = 8.dp), contentAlignment = Alignment.BottomCenter) {
         AnimatedVisibility(
             visible,
             enter = fadeIn(tween(200)) + scaleIn(tween(260), initialScale = 0.9f, transformOrigin = TransformOrigin(0.9f, 1f)),
             exit = fadeOut(tween(160)) + scaleOut(tween(180), targetScale = 0.92f, transformOrigin = TransformOrigin(0.9f, 1f))
         ) {
             Column(
-                Modifier.fillMaxWidth().frostedGlass(RoundedCornerShape(28.dp), colors).clip(RoundedCornerShape(28.dp))
-                    .clickable(MutableInteractionSource(), null) {}.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(if (colors.isDark) Color(0xFF252528) else colors.surface)
+                    .clickable(MutableInteractionSource(), null) {}.padding(start = 8.dp, end = 8.dp, top = 18.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    MenuChip("Videos", Sym.Rounded.Play_circle, Color(0xFF5C9DFF)) { onPick(Page.Shortcut(MediaKind.Videos)) }
-                    MenuChip("Favourites", Sym.Rounded.Favorite, Color(0xFFFF5A5F)) { onPick(Page.Shortcut(MediaKind.Favourites)) }
-                    MenuChip("Recent", Sym.Rounded.Schedule, Color(0xFF4FCB8A)) { onPick(Page.Shortcut(MediaKind.Recent)) }
-                    if (android.os.Build.VERSION.SDK_INT >= 30) MenuChip("Trash", MaterialSymbols.Rounded.Delete, Color(0xFFF4B94F)) { onPick(Page.Trash) }
+                Row(Modifier.fillMaxWidth()) {
+                    MenuChip("Videos", Sym.Rounded.Play_circle, Modifier.weight(1f)) { onPick(Page.Shortcut(MediaKind.Videos)) }
+                    MenuChip("Favourites", Sym.Rounded.Favorite, Modifier.weight(1f)) { onPick(Page.Shortcut(MediaKind.Favourites)) }
+                    MenuChip("Recent", Sym.Rounded.Schedule, Modifier.weight(1f)) { onPick(Page.Shortcut(MediaKind.Recent)) }
+                    MenuChip("All albums", Sym.Rounded.Photo_library, Modifier.weight(1f)) { onPick(Page.AllAlbums) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MenuPill("Private Safe", Sym.Rounded.Lock, Modifier.weight(1f)) { onPick(Page.PrivateSafe) }
-                    MenuPill("Quotes", Sym.Rounded.Format_quote, Modifier.weight(1f)) { onPick(null) }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MenuPill("All albums", Sym.Rounded.Photo_library, Modifier.weight(1f)) { onPick(Page.AllAlbums) }
-                    MenuPill("Settings", MaterialSymbols.Rounded.Settings, Modifier.weight(1f)) { onPick(Page.Settings) }
+                Row(Modifier.fillMaxWidth()) {
+                    MenuChip("Private safe", Sym.Rounded.Lock, Modifier.weight(1f)) { onPick(Page.PrivateSafe) }
+                    if (android.os.Build.VERSION.SDK_INT >= 30) MenuChip("Recycle bin", Sym.Rounded.Delete, Modifier.weight(1f)) { onPick(Page.Trash) }
+                    MenuChip("Settings", Sym.Rounded.Settings, Modifier.weight(1f)) { onPick(Page.Settings) }
+                    MenuChip("Quotes", Sym.Rounded.Format_quote, Modifier.weight(1f)) { onPick(null) }
                 }
             }
         }
@@ -105,26 +105,16 @@ fun MenuCard(visible: Boolean, onDismiss: () -> Unit, onPick: (Page?) -> Unit) {
 }
 
 @Composable
-private fun MenuChip(label: String, icon: ImageVector, tint: Color, onClick: () -> Unit) {
+private fun MenuChip(label: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
     val colors = rememberShellColors()
     Column(
-        Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(6.dp),
+        modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        ElvanTintedIcon(icon = icon, tint = tint, size = 52.dp, iconSize = 24.dp)
-        Text(label, fontSize = 12.sp, color = colors.textPrimary, modifier = Modifier.padding(top = 6.dp))
-    }
-}
-
-@Composable
-private fun MenuPill(label: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
-    val colors = rememberShellColors()
-    Row(
-        modifier.clip(CircleShape).background(colors.iconBg).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(icon, null, tint = colors.textPrimary, modifier = Modifier.size(20.dp))
-        Text(label, fontSize = 13.sp, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 10.dp))
+        Box(Modifier.size(48.dp).clip(CircleShape).background(if (colors.isDark) Color(0xFF47474A) else colors.iconBg), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = colors.textPrimary, modifier = Modifier.size(22.dp))
+        }
+        Text(label, fontSize = 12.sp, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
     }
 }
 
@@ -162,16 +152,44 @@ fun StoriesTab(library: GalleryLibrary, grid: LazyGridState, nav: Navigator) {
         if (stories.isEmpty()) item(key = "no_stories", span = { GridItemSpan(maxLineSpan) }) {
             Text("Stories appear here for days with lots of pictures.", color = colors.textSecondary, modifier = Modifier.padding(24.dp))
         }
-        items(stories, key = { it.key }) { story ->
+        if (stories.isNotEmpty()) item(key = "stories_heading", span = { GridItemSpan(maxLineSpan) }) {
+            // Samsung's section heading: bold name with a chevron at the far end
+            Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Stories", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary, modifier = Modifier.weight(1f))
+                Icon(Sym.Rounded.Chevron_right, null, tint = colors.textPrimary, modifier = Modifier.size(24.dp))
+            }
+        }
+        // The newest story is the big card across the top; the rest pair up beneath it
+        stories.firstOrNull()?.let { story ->
+            item(key = story.key, span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                    Modifier.fillMaxWidth().aspectRatio(1.41f).clip(RoundedCornerShape(26.dp)).background(colors.surface)
+                        .clickable { nav.open(Page.Story(story.title, story.media)) }
+                ) {
+                    val first = story.media.first()
+                    coil3.compose.AsyncImage(
+                        model = coil3.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                            .data(if (first.isVideo) thumbModel(first.uri) else first.uri).size(1080).build(),
+                        contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.fillMaxSize()
+                    )
+                    Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(0.35f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.6f))))
+                    Column(Modifier.align(Alignment.BottomStart).padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
+                        Text(story.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("${story.media.size} items", color = Color.White.copy(alpha = 0.85f), fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+            }
+        }
+        items(stories.drop(1), key = { it.key }) { story ->
             Box(
-                Modifier.aspectRatio(0.8f).clip(RoundedCornerShape(24.dp)).background(colors.surface)
+                Modifier.aspectRatio(0.87f).clip(RoundedCornerShape(22.dp)).background(colors.surface)
                     .clickable { nav.open(Page.Story(story.title, story.media)) }
             ) {
                 Thumb(story.media.first().uri, Modifier.fillMaxSize())
-                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(0.55f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.7f))))
-                Column(Modifier.align(Alignment.BottomStart).padding(14.dp)) {
-                    Text(story.title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    Text("${story.media.size} items", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(0.5f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.6f))))
+                Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(story.title, color = Color.White, fontSize = 15.sp)
+                    Text("${story.media.size} items", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
                 }
             }
         }

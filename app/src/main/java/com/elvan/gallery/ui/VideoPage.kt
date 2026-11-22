@@ -103,10 +103,25 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, onTap: () -> Uni
             factory = { PlayerView(it).apply { useController = false; resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
             modifier = Modifier.fillMaxSize()
         )
+        // Samsung's video controls: play/pause beside a full-width seek line with the times under it; capture and sound below
         if (chrome) Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).padding(bottom = 84.dp)
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).padding(bottom = 132.dp)
         ) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.Top) {
+                RoundControl(if (playing) Sym.RoundedFilled.Pause else Sym.RoundedFilled.Play_arrow, if (playing) "Pause" else "Play") {
+                    if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
+                    if (playing) player.pause() else player.play()
+                }
+                Column(Modifier.weight(1f).padding(start = 10.dp, end = 10.dp)) {
+                    SeekLine(if (duration > 0) position.toFloat() / duration else 0f) { player.seekTo((it * duration).toLong()) }
+                    Row(Modifier.fillMaxWidth()) {
+                        Text(formatClock(position), color = Color.White, fontSize = 13.sp)
+                        Spacer(Modifier.weight(1f))
+                        Text(formatClock(duration), color = Color.White, fontSize = 13.sp)
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                 RoundControl(Sym.Rounded.Screenshot_frame, "Capture") {
                     scope.launch {
                         val ok = withContext(Dispatchers.IO) {
@@ -120,34 +135,41 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, onTap: () -> Uni
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                Row(
-                    Modifier.height(32.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)).border(1.dp, Color.White.copy(alpha = 0.3f), CircleShape)
-                        .clickable {
-                            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
-                            if (playing) player.pause() else player.play()
-                        }.padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(if (playing) Sym.RoundedFilled.Pause else Sym.RoundedFilled.Play_arrow, if (playing) "Pause" else "Play", tint = Color.White, modifier = Modifier.size(20.dp))
-                    Text("  ${formatClock(position)}", color = Color.White, fontSize = 13.sp)
-                    Text(" / ${formatClock(duration)}", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
-                }
-                Spacer(Modifier.weight(1f))
                 RoundControl(if (muted) Sym.Rounded.Volume_off else Sym.Rounded.Volume_up, if (muted) "Sound off" else "Sound on") {
                     muted = !muted; player.volume = if (muted) 0f else 1f
                 }
             }
-            FrameScrubber(uri, if (duration > 0) position.toFloat() / duration else 0f) { player.seekTo((it * duration).toLong()) }
         }
+    }
+}
+
+/** A thin white line with a round thumb; tap or drag anywhere on it to seek. */
+@Composable
+private fun SeekLine(progress: Float, onSeek: (Float) -> Unit) {
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    val shown = dragging ?: progress
+    Canvas(Modifier.fillMaxWidth().height(36.dp).systemGestureExclusion().pointerInput(Unit) {
+        detectDragGestures(
+            onDragStart = { p -> dragging = (p.x / size.width).coerceIn(0f, 1f); onSeek(dragging!!) },
+            onDragEnd = { dragging = null },
+            onDragCancel = { dragging = null },
+            onDrag = { change, _ -> change.consume(); dragging = (change.position.x / size.width).coerceIn(0f, 1f); onSeek(dragging!!) }
+        )
+    }.pointerInput(Unit) { detectTapGestures { p -> onSeek((p.x / size.width).coerceIn(0f, 1f)) } }) {
+        val y = size.height / 2
+        val x = shown * size.width
+        drawLine(Color.White.copy(alpha = 0.35f), Offset(0f, y), Offset(size.width, y), 2.dp.toPx())
+        drawLine(Color.White, Offset(0f, y), Offset(x, y), 2.dp.toPx())
+        drawCircle(Color.White, 7.dp.toPx(), Offset(x, y))
     }
 }
 
 @Composable
 private fun RoundControl(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
     Box(
-        Modifier.size(32.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)).border(1.dp, Color.White.copy(alpha = 0.3f), CircleShape).clickable(onClick = onClick),
+        Modifier.size(36.dp).clip(CircleShape).background(Color(0x99303033)).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
-    ) { Icon(icon, label, tint = Color.White, modifier = Modifier.size(18.dp)) }
+    ) { Icon(icon, label, tint = Color.White, modifier = Modifier.size(20.dp)) }
 }
 
 /** The "00:27" clock (two-digit minutes). */
@@ -156,39 +178,3 @@ private fun formatClock(ms: Long): String {
     return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%02d:%02d".format(s / 60, s % 60)
 }
 
-/** The video's frames in a row; the white playhead marks where it is; drag anywhere on it to seek. */
-@Composable
-private fun FrameScrubber(uri: String, progress: Float, onSeek: (Float) -> Unit) {
-    val context = LocalContext.current
-    val frames by produceState<List<Bitmap>>(emptyList(), uri) {
-        value = withContext(Dispatchers.IO) {
-            val r = MediaMetadataRetriever()
-            try {
-                r.setDataSource(context, Uri.parse(uri))
-                val ms = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                (0 until 9).mapNotNull { i ->
-                    val at = (ms * 1000 * (i + 0.5) / 9).toLong()
-                    if (Build.VERSION.SDK_INT >= 27) r.getScaledFrameAtTime(at, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 120, 120) else r.getFrameAtTime(at)
-                }
-            } catch (e: Exception) { emptyList() } finally { r.release() }
-        }
-    }
-    var dragging by remember { mutableStateOf<Float?>(null) }
-    val shown = dragging ?: progress
-    Box(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp).height(44.dp).systemGestureExclusion()) {
-        Row(Modifier.fillMaxSize().clip(RoundedCornerShape(6.dp))) {
-            frames.forEach { Image(it.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.weight(1f).fillMaxHeight()) }
-        }
-        Canvas(Modifier.fillMaxSize().pointerInput(Unit) {
-            detectDragGestures(
-                onDragStart = { p -> dragging = (p.x / size.width).coerceIn(0f, 1f); onSeek(dragging!!) },
-                onDragEnd = { dragging = null },
-                onDragCancel = { dragging = null },
-                onDrag = { change, _ -> change.consume(); dragging = (change.position.x / size.width).coerceIn(0f, 1f); onSeek(dragging!!) }
-            )
-        }.pointerInput(Unit) { detectTapGestures { p -> onSeek((p.x / size.width).coerceIn(0f, 1f)) } }) {
-            val x = shown * size.width
-            drawLine(Color.White, Offset(x, -4.dp.toPx()), Offset(x, size.height + 4.dp.toPx()), 3.dp.toPx())
-        }
-    }
-}

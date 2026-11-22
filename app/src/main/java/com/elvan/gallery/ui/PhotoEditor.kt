@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.elvan.gallery.ui
 
 import android.content.ContentValues
@@ -36,6 +38,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -209,9 +212,9 @@ data class EditState(
 
 private enum class EditorTool(val label: String, val icon: ImageVector) {
     Transform("Transform", Sym.Rounded.Crop_rotate),
-    Filters("Filters", Sym.Rounded.Filter_vintage),
-    Tone("Tone", Sym.Rounded.Tune),
-    Decorations("Decorations", Sym.Rounded.Add_reaction),
+    Filters("Filters", Sym.Rounded.Blur_on),
+    Tone("Tone", Sym.Rounded.Light_mode),
+    Decorations("Decorations", Sym.Rounded.Mood),
     Tools("Tools", Sym.Rounded.Apps)
 }
 
@@ -255,10 +258,17 @@ fun PhotoEditor(uri: String, onClose: () -> Unit, onSaved: () -> Unit) {
     }
     BackHandler { if (changed) leaving = true else onClose() }
 
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val window = (view.context as? android.app.Activity)?.window
+        val bars = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, view) }
+        bars?.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+        onDispose { bars?.show(androidx.core.view.WindowInsetsCompat.Type.statusBars()) }
+    }
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         // Top bar: undo, redo | Revert, Save, more
         Row(
-            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).height(68.dp).padding(horizontal = 20.dp),
+            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility).height(48.dp).padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             BarIcon(Sym.Rounded.Undo, "Undo", undo.isNotEmpty()) { redo.add(state); state = undo.removeAt(undo.lastIndex); live = state }
@@ -633,8 +643,8 @@ private fun TransformPanel(s: EditState, source: Bitmap?, onLive: (EditState) ->
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             CapsuleIcon(Sym.Rounded.Flip, "Flip horizontally", false) { onCommit(s.copy(flip = !s.flip)) }
-            CapsuleIcon(Sym.Rounded.Rotate_left, "Rotate", false) { onCommit(s.copy(rotation = (s.rotation + 270) % 360, crop = Rect(0f, 0f, 1f, 1f), aspect = null)) }
-            CapsuleIcon(Sym.Rounded.Aspect_ratio, "Ratio", sub == 1) { sub = if (sub == 1) 0 else 1 }
+            CapsuleIcon(Sym.Rounded.Rotate_90_degrees_ccw, "Rotate", false) { onCommit(s.copy(rotation = (s.rotation + 270) % 360, crop = Rect(0f, 0f, 1f, 1f), aspect = null)) }
+            CapsuleIcon(Sym.Rounded.Open_in_full, "Ratio", sub == 1) { sub = if (sub == 1) 0 else 1 }
             CapsuleIcon(Sym.Rounded.Straighten, "Straighten", sub == 2) { sub = if (sub == 2) 0 else 2 }
         }
     }

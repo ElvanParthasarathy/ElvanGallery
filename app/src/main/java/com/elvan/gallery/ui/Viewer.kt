@@ -118,7 +118,8 @@ fun ZoomViewer(
     onClosed: () -> Unit = {},
     heroKey: (Int) -> String? = { null },
     details: (@Composable (Int) -> Unit)? = null,
-    topActions: (@Composable (Int) -> Unit)? = null
+    topActions: (@Composable (Int, () -> Unit) -> Unit)? = null,
+    showTitle: Boolean = true
 ) {
     val pager = rememberPagerState(initialPage = start.coerceIn(0, (models.size - 1).coerceAtLeast(0))) { models.size }
     var chrome by remember { mutableStateOf(true) }
@@ -150,7 +151,8 @@ fun ZoomViewer(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val w = constraints.maxWidth.toFloat()
         val h = constraints.maxHeight.toFloat()
-        val infoH = h * 0.42f
+        // Samsung: the details take the lower half; the picture slides up to sit above them
+        val infoH = h * 0.52f
         val closeDistance = h * 0.12f
         val screen = androidx.compose.ui.geometry.Rect(0f, 0f, w, h)
         val hero = models.getOrNull(pager.currentPage)?.let { heroKey(pager.currentPage) }?.let { HeroBounds.rects[it] }
@@ -212,25 +214,28 @@ fun ZoomViewer(
             // The bars appear once the photo has landed and go at once on close
             val chromeAlpha = if (chrome && dragY.value == 0f && opened && !closing) 1f else 0f
             Row(
-                Modifier.align(Alignment.TopStart).graphicsLayer { alpha = chromeAlpha }.fillMaxWidth()
+                Modifier.align(Alignment.TopStart).graphicsLayer { alpha = chromeAlpha * (1f - info.value) }.fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.statusBars).padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
-                    Modifier.size(48.dp).frostedGlass(CircleShape, colors).clip(CircleShape).clickable(enabled = chromeAlpha > 0f, onClick = onBack),
+                    Modifier.size(48.dp).frostedGlass(CircleShape, colors).background(Color(0xB8252527), CircleShape)
+                        .clip(CircleShape).clickable(enabled = chromeAlpha > 0f, onClick = onBack),
                     contentAlignment = Alignment.Center
                 ) { Icon(MaterialSymbols.Rounded.ArrowBack, "Back", tint = colors.textPrimary, modifier = Modifier.size(22.dp)) }
-                Text(
+                if (showTitle) Text(
                     if (models.isNotEmpty()) title(pager.currentPage) else "", color = Color.White, fontSize = 15.sp, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 14.dp).weight(1f)
-                )
-                if (topActions != null && models.isNotEmpty()) topActions(pager.currentPage)
+                ) else Box(Modifier.weight(1f))
+                if (topActions != null && models.isNotEmpty()) topActions(pager.currentPage) {
+                    scope.launch { info.animateTo(1f, heroSpring) }
+                }
             }
 
             if (details != null && models.isNotEmpty() && info.value > 0f) Box(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(with(LocalDensity.current) { infoH.toDp() })
                     .graphicsLayer { translationY = (1f - info.value) * infoH }
-                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(colors.surface)
+                    .background(Color.Black)
             ) { details(pager.currentPage) }
 
             Column(
@@ -240,7 +245,12 @@ fun ZoomViewer(
             ) {
                 // A video page shows its own strip of frames instead (its seek bar)
                 if (filmstrip && models.size > 1 && !isVideo(pager.currentPage)) Filmstrip(models, pager.currentPage) { scope.launch { pager.animateScrollToPage(it) } }
-                if (models.isNotEmpty() && chromeAlpha > 0f) ElvanFloatingActionBar(actions(pager.currentPage) { scope.launch { info.animateTo(1f, heroSpring) } })
+                if (models.isNotEmpty() && chromeAlpha > 0f) ElvanFloatingActionBar(
+                    actions = actions(pager.currentPage) { scope.launch { info.animateTo(1f, heroSpring) } },
+                    showLabels = false,
+                    barHeight = 48.dp,
+                    containerColor = Color(0xB8252527)
+                )
             }
         }
     }
@@ -363,6 +373,7 @@ fun MediaViewer(media: List<Media>, start: Int, closing: Boolean, onBack: () -> 
         closing = closing,
         onClosed = onClosed,
         heroKey = { items.getOrNull(it)?.uri },
+        showTitle = false,
         details = { page -> MediaDetails(items[page]) },
         filmstrip = filmstrip,
         isVideo = { items[it].isVideo },
@@ -371,13 +382,24 @@ fun MediaViewer(media: List<Media>, start: Int, closing: Boolean, onBack: () -> 
                 context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(items[pos].uri.toUri(), "video/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
             } catch (e: Exception) { Toast.makeText(context, "No video player found", Toast.LENGTH_SHORT).show() }
         },
-        topActions = { page ->
+        topActions = { page, openDetails ->
             val uri = items[page].uri.toUri()
             Box {
-                Box(
-                    Modifier.size(48.dp).frostedGlass(CircleShape, colors).clip(CircleShape).clickable { moreOpen = true },
-                    contentAlignment = Alignment.Center
-                ) { Icon(MaterialSymbols.Rounded.MoreVert, "More", tint = colors.textPrimary, modifier = Modifier.size(22.dp)) }
+                Row(
+                    Modifier.height(44.dp).frostedGlass(CircleShape, colors)
+                        .background(Color(0xB8252527), CircleShape).clip(CircleShape),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(Modifier.size(44.dp).clip(CircleShape).clickable { onEdit(items[page]) }, contentAlignment = Alignment.Center) {
+                        Icon(Sym.Rounded.Rotate_right, "Rotate", tint = colors.textPrimary, modifier = Modifier.size(20.dp))
+                    }
+                    Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = openDetails), contentAlignment = Alignment.Center) {
+                        Icon(Sym.Rounded.Visibility, "View details", tint = colors.textPrimary, modifier = Modifier.size(20.dp))
+                    }
+                    Box(Modifier.size(44.dp).clip(CircleShape).clickable { moreOpen = true }, contentAlignment = Alignment.Center) {
+                        Icon(MaterialSymbols.Rounded.MoreVert, "More", tint = colors.textPrimary, modifier = Modifier.size(20.dp))
+                    }
+                }
                 ElvanPopupMenu(
                     expanded = moreOpen, colors = colors,
                     onDismissRequest = { ElvanMenuState.isMenuOpen = false; moreOpen = false },
@@ -419,13 +441,13 @@ fun MediaViewer(media: List<Media>, start: Int, closing: Boolean, onBack: () -> 
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }, "Share Image"))
                 }),
-                ElvanFloatingAction("Delete", MaterialSymbols.Rounded.Delete, {
+                ElvanFloatingAction("Delete", Sym.Rounded.Delete, {
                     // Android 11+: the photo goes to the phone's trash (restorable), with Android's own confirmation
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         pendingDelete = page
                         systemDelete.launch(IntentSenderRequest.Builder(MediaStore.createTrashRequest(context.contentResolver, listOf(uri), true).intentSender).build())
                     } else dialog = "delete" to page
-                }, isDestructive = true)
+                })
             )
         }
     )

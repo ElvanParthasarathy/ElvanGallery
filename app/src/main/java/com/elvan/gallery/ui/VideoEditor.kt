@@ -1,3 +1,5 @@
+@file:kotlin.OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.elvan.gallery.ui
 
 import android.content.ContentValues
@@ -26,6 +28,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -163,6 +166,13 @@ private fun videoEffects(e: VideoEdit, withSpeed: Boolean): List<Effect> = build
 @OptIn(UnstableApi::class)
 @Composable
 fun VideoEditor(uri: String, onClose: () -> Unit, onSaved: () -> Unit) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val window = (view.context as? android.app.Activity)?.window
+        val bars = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, view) }
+        bars?.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+        onDispose { bars?.show(androidx.core.view.WindowInsetsCompat.Type.statusBars()) }
+    }
     val context = LocalContext.current
     val undo = remember { mutableStateListOf<VideoEdit>() }
     val redo = remember { mutableStateListOf<VideoEdit>() }
@@ -224,7 +234,7 @@ fun VideoEditor(uri: String, onClose: () -> Unit, onSaved: () -> Unit) {
 
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Row(
-            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).height(68.dp).padding(horizontal = 20.dp),
+            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility).height(48.dp).padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             VBarIcon(Sym.Rounded.Undo, "Undo", undo.isNotEmpty()) { redo.add(edit); edit = undo.removeAt(undo.lastIndex) }

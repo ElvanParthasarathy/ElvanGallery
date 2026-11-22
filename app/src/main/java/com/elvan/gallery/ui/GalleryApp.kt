@@ -27,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -51,9 +52,7 @@ fun defaultPrefs(context: Context): SharedPreferences =
 
 enum class GalleryTab(val title: String, val icon: ImageVector, val activeIcon: ImageVector) {
     Pictures("Pictures", Sym.Rounded.Photo, Sym.RoundedFilled.Photo),
-    Albums("Albums", Sym.Rounded.Photo_library, Sym.RoundedFilled.Photo_library),
-    Stories("Stories", Sym.Rounded.Auto_stories, Sym.RoundedFilled.Auto_stories),
-    Search("Search", Sym.Rounded.Search, Sym.RoundedFilled.Search)
+    Albums("Albums", Sym.Rounded.Photo_library, Sym.RoundedFilled.Photo_library)
 }
 
 /** The pages above the tabs; the newest is on top and Back removes it. */
@@ -66,6 +65,7 @@ sealed interface Page {
     data object Settings : Page
     data class Shortcut(val kind: MediaKind) : Page
     data object Trash : Page
+    data object Search : Page
     data class Story(val title: String, val media: List<Media>) : Page
     data class Editor(val uri: String, val video: Boolean) : Page
 }
@@ -126,6 +126,7 @@ private fun PageHost(entry: PageEntry, library: GalleryLibrary, nav: Navigator) 
         Page.Settings -> SettingsPage(library, nav)
         is Page.Shortcut -> MediaListPage(page.kind, library, nav)
         Page.Trash -> TrashPage(library, nav)
+        Page.Search -> SearchPage(library, nav)
         is Page.Story -> MediaGridPage(page.title, page.media, library, nav, "Nothing here")
     }
 }
@@ -140,6 +141,7 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
     var menuOpen by remember { mutableStateOf(false) }
     var menuCard by remember { mutableStateOf(false) }
     var quotes by remember { mutableStateOf(false) }
+    var searchMode by remember { mutableStateOf(false) }
     val albums = library.albums
     val pictureSelection = remember { MediaSelection() }
 
@@ -147,8 +149,9 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
     val selectingPictures = tab == GalleryTab.Pictures && pictureSelection.active
     val selecting = selectingAlbums || selectingPictures
     val pictures = library.all
-    BackHandler(enabled = selecting || menuCard) {
+    BackHandler(enabled = selecting || menuCard || searchMode) {
         when {
+            searchMode -> searchMode = false
             menuCard -> menuCard = false
             selectingPictures -> pictureSelection.clear()
             else -> albums?.stopSelecting()
@@ -165,15 +168,14 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
                 else add(ElvanPopupMenuItem("Sort", MaterialSymbols.Rounded.Sort, { close(); library.showSortSheet = true }))
                 add(ElvanPopupMenuItem("All albums", Sym.Rounded.Photo_library, { close(); nav.open(Page.AllAlbums) }))
             }
-            else -> {}
         }
     }
 
     ElvanShell(
         gridState = gridStates.getValue(tab),
-        title = tab.title,
+        title = if (searchMode) "Search" else tab.title,
         showNavbar = true,
-        hasActions = !selecting && tabMenu.isNotEmpty(),
+        hasActions = !selecting,
         isSelectionMode = selecting,
         selectedCount = if (selectingPictures) pictureSelection.selected.size else albums?.selectedCount ?: 0,
         isAllSelected = if (selectingPictures) pictureSelection.selected.size == pictures.size else albums?.allSelected == true,
@@ -183,8 +185,25 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
         },
         onCancelSelection = { if (selectingPictures) pictureSelection.clear() else albums?.stopSelecting() },
         actions = {
-            ElvanTopBarIconButton(onClick = { menuOpen = true }) {
-                Icon(MaterialSymbols.Rounded.MoreVert, "More", tint = colors.textPrimary, modifier = Modifier.size(22.dp))
+            if (!searchMode && tab == GalleryTab.Albums && albums != null) {
+                // Create: pick the albums that make up a new group
+                ElvanTopBarIconButton(onClick = {
+                    albums.startSelecting()
+                    android.widget.Toast.makeText(context, "Choose albums for the new group", android.widget.Toast.LENGTH_SHORT).show()
+                }) {
+                    Icon(Sym.Rounded.Add, "Create", tint = colors.textPrimary, modifier = Modifier.size(25.dp))
+                }
+            }
+            if (!searchMode && (tab == GalleryTab.Pictures || tab == GalleryTab.Albums)) {
+                if (tab == GalleryTab.Pictures) ElvanTopBarIconButton(onClick = { }) {
+                    Icon(Sym.Rounded.Cloud, "Sync photos and videos", tint = colors.textPrimary, modifier = Modifier.size(23.dp))
+                }
+                ElvanTopBarIconButton(onClick = { nav.open(Page.Search) }) {
+                    Icon(MaterialSymbols.Rounded.Search, "Search", tint = colors.textPrimary, modifier = Modifier.size(23.dp))
+                }
+            }
+            if (!searchMode) ElvanTopBarIconButton(onClick = { menuOpen = true }) {
+                Icon(MaterialSymbols.Rounded.MoreVert, "More options", tint = colors.textPrimary, modifier = Modifier.size(23.dp))
             }
             ElvanPopupMenu(
                 expanded = menuOpen,
@@ -197,8 +216,8 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
             val controller = LocalElvanShellController.current
             if (selectingPictures) PictureSelectionBar(pictureSelection, library)
             else if (selectingAlbums) AlbumSelectionBar(albums!!)
-            else Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                // The five buttons: Pictures, Albums, Stories, Search, and Menu (a card, not a page)
+            else if (!menuCard) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                // Pictures, Albums and Menu.
                 ElvanNavBar(
                     items = GalleryTab.entries.map { SideRailItem(it.icon, it.activeIcon, it.title) } +
                         SideRailItem(Sym.Rounded.Menu, Sym.RoundedFilled.Menu, "Menu"),
@@ -207,7 +226,7 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
                         val picked = GalleryTab.entries.getOrNull(i)
                         when {
                             picked == null -> menuCard = !menuCard
-                            picked == tab -> { menuCard = false; controller.toggleHeader() }
+                            picked == tab -> { menuCard = false; searchMode = false; controller.toggleHeader() }
                             else -> {
                                 menuCard = false
                                 albums?.stopSelecting()
@@ -216,7 +235,8 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
                                 prefs.edit().putString("last_tab", picked.name).apply()
                             }
                         }
-                    }
+                    },
+                    containerColor = Color(0xB8252527)
                 )
             }
         },
@@ -232,13 +252,11 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
         }
     ) {
         val grid = gridStates.getValue(tab)
-        when (tab) {
+        if (searchMode) SearchTab(library, grid, nav) else when (tab) {
             GalleryTab.Pictures ->
                 if (!library.loaded) SkeletonGrid(grid)
                 else DatedMediaGrid(pictures, grid, pictureSelection) { list, i -> nav.open(Page.Viewer(list, i)) }
             GalleryTab.Albums -> if (albums == null) SkeletonGrid(grid, columns = 3) else AlbumsTab(library, grid, nav)
-            GalleryTab.Stories -> StoriesTab(library, grid, nav)
-            GalleryTab.Search -> SearchTab(library, grid, nav)
         }
     }
     if (library.showSortSheet) albums?.let { a -> SortDialog(a.order, { library.showSortSheet = false }) { a.changeOrder(it) } }

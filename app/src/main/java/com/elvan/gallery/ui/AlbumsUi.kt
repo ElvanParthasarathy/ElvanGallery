@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -29,10 +30,12 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
@@ -48,7 +51,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -96,11 +102,20 @@ private val albumDialog = mutableStateOf<AlbumDialog?>(null)
 fun AlbumsTab(library: GalleryLibrary, grid: LazyGridState, nav: Navigator) {
     val model = library.albums ?: return
     val drag = remember { AlbumDrag() }
-    ElvanGrid(grid, columns = 3, gap = 12.dp, sidePadding = 14.dp, modifier = Modifier.dragToArrange(grid, model, drag)) {
+    val context = LocalContext.current
+    val prefs = remember(context) { context.getSharedPreferences("gallery_prefs", android.content.Context.MODE_PRIVATE) }
+    // 1 is the list (thumbnail, name and count in rows); pinching in goes 2 -> 3 -> 4 -> list
+    var columns by remember { androidx.compose.runtime.mutableIntStateOf(prefs.getInt("albums_columns", 3).takeIf { it in albumLevels } ?: 3) }
+    val morph = remember { GridMorph(albumSlots) }
+    // The shell's spacer and the "All albums" heading come before the first album
+    val firstTile = if (model.choosingEssential) 1 else 2
+    ElvanGrid(grid, columns = columns, gap = if (columns == 1) 0.dp else 10.dp, sidePadding = 10.dp,
+        modifier = Modifier.pinchMorph(morph, grid, columns, albumLevels, firstTile) { columns = it; prefs.edit().putInt("albums_columns", it).apply() }
+            .dragToArrange(grid, model, drag)) {
         if (!model.choosingEssential) item(key = "albums_header", span = { GridItemSpan(maxLineSpan) }) {
             AlbumsHeading(model.onlyEssential) { nav.open(Page.AllAlbums) }
         }
-        albumTiles(model, model.visible, nav, grid, drag)
+        albumTiles(model, model.visible, nav, grid, drag, asList = columns == 1, morph = morph, columns = columns)
     }
     AlbumDialogs(model, library)
 }
@@ -108,14 +123,34 @@ fun AlbumsTab(library: GalleryLibrary, grid: LazyGridState, nav: Navigator) {
 @Composable
 private fun AlbumsHeading(essential: Boolean, onViewAll: () -> Unit) {
     val colors = rememberShellColors()
-    Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(if (essential) "Essential albums" else "All albums", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary, modifier = Modifier.weight(1f))
+    Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(if (essential) "Essential albums" else "All albums", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary, modifier = Modifier.weight(1f))
         if (essential) Text("View all", color = colors.link, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onViewAll).padding(8.dp))
     }
 }
 
-fun LazyGridScope.albumTiles(model: AlbumsModel, entries: List<AlbumEntry>, nav: Navigator, grid: LazyGridState? = null, drag: AlbumDrag? = null) {
-    items(entries, key = { it.key }) { entry ->
+// Samsung: 2 across, 3 across, then the list
+private val albumLevels = listOf(2, 3, 1)
+
+/** Album tiles: 10 dp in from the sides and apart, 5:6 covers; the list is 76 dp rows with a 64 dp cover 6 dp down. */
+private val albumSlots = GridSlots { index, columns, width, target ->
+    val side = 10.dp.toPx()
+    if (columns == 1) {
+        val row = 76.dp.toPx()
+        if (target) Rect(side, index * row + 6.dp.toPx(), side + 64.dp.toPx(), index * row + 70.dp.toPx())
+        else Rect(side, index * row, width - side, (index + 1) * row)
+    } else {
+        val gap = 10.dp.toPx()
+        val w = (width - 2 * side - (columns - 1) * gap) / columns
+        val h = w * 1.2f
+        val x = side + (index % columns) * (w + gap)
+        val y = (index / columns) * (h + gap)
+        Rect(x, y, x + w, y + h)
+    }
+}
+
+fun LazyGridScope.albumTiles(model: AlbumsModel, entries: List<AlbumEntry>, nav: Navigator, grid: LazyGridState? = null, drag: AlbumDrag? = null, asList: Boolean = false, morph: GridMorph? = null, columns: Int = 3) {
+    itemsIndexed(entries, key = { _, it -> it.key }) { index, entry ->
         val carried = drag?.key == entry.key
         AlbumTile(
             model, entry, nav,
@@ -126,20 +161,53 @@ fun LazyGridScope.albumTiles(model: AlbumsModel, entries: List<AlbumEntry>, nav:
                     translationY = drag.finger.y - drag.grab.y - (it.offset.y - info.viewportStartOffset)
                 }
                 scaleX = 1.06f; scaleY = 1.06f
-            } else Modifier.animateItem()
+            } else (if (morph?.settling == true) Modifier.animateItem(placementSpec = null) else Modifier.animateItem())
+                .then(if (morph != null) Modifier.morphTile(morph, index, columns) else Modifier),
+            asList
         )
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, modifier: Modifier = Modifier) {
+private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, modifier: Modifier = Modifier, asList: Boolean = false) {
     val colors = rememberShellColors()
     val on = entry.key in model.selected
     val dimmed = model.pickingGroup && entry is Album
     model.titles
-    Column(
-        modifier.alpha(if (dimmed) 0.4f else 1f).clip(RoundedCornerShape(16.dp)).combinedClickable(
+    val onClick = {
+        when {
+            model.pickingGroup && entry is AlbumGroup -> model.moveSelectedInto(entry)
+            model.selecting -> model.toggle(entry.key)
+            entry is Album -> nav.open(Page.Album(entry.name))
+            entry is AlbumGroup -> nav.open(Page.Group(entry.name))
+        }
+    }
+    val onLongClick = if (model.canRearrange) null else ({ model.toggle(entry.key) })
+    if (asList) {
+        // List level: a rounded thumbnail with the name and count beside it
+        Row(
+            modifier.alpha(if (dimmed) 0.4f else 1f).fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                .combinedClickable(enabled = !dimmed, onClick = onClick, onLongClick = onLongClick).padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(colors.surface)) {
+                when (entry) {
+                    is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize())
+                    is AlbumGroup -> GroupCover(entry, colors)
+                }
+                if (model.selecting && !model.pickingGroup) ElvanCheckMark(on, colors.link, Color.White, 20.dp, Modifier.align(Alignment.TopStart).padding(4.dp))
+            }
+            Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                Text(model.title(entry), fontSize = 16.sp, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (entry is AlbumGroup) "${entry.albums.size} albums" else "${entry.count}", fontSize = 13.sp, color = colors.textSecondary, modifier = Modifier.padding(top = 2.dp))
+            }
+        }
+        return
+    }
+    // A 5:6 rounded cover with the name and count laid over its foot, on a soft shade
+    Box(
+        modifier.alpha(if (dimmed) 0.4f else 1f).fillMaxWidth().aspectRatio(5f / 6f).clip(RoundedCornerShape(12.dp)).background(colors.surface).combinedClickable(
             enabled = !dimmed,
             onClick = {
                 when {
@@ -153,24 +221,27 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
             onLongClick = if (model.canRearrange) null else ({ model.toggle(entry.key) })
         )
     ) {
-        Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(16.dp)).background(colors.surface)) {
-            when (entry) {
-                is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize())
-                is AlbumGroup -> GroupCover(entry, colors)
-            }
-            if (model.selecting && !model.pickingGroup) {
-                if (on) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.25f)))
-                ElvanCheckMark(on, colors.link, Color.White, 22.dp, Modifier.align(Alignment.TopStart).padding(8.dp))
-            }
+        when (entry) {
+            is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize())
+            is AlbumGroup -> GroupCover(entry, colors)
         }
-        Row(Modifier.padding(start = 4.dp, top = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(model.title(entry), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            val essential = when (entry) { is Album -> entry.name in model.essential; is AlbumGroup -> entry.albums.any { it.name in model.essential } }
-            if (essential) Icon(Sym.RoundedFilled.Star, null, tint = Color(0xFFF4B94F), modifier = Modifier.padding(start = 3.dp).size(13.dp))
+        Box(Modifier.fillMaxWidth().fillMaxHeight(0.45f).align(Alignment.BottomCenter)
+            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)))))
+        Column(Modifier.align(Alignment.BottomCenter).padding(start = 8.dp, end = 8.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(model.title(entry), fontSize = 16.sp, color = Color.White,
+                    style = LocalTextStyle.current.copy(shadow = Shadow(Color.Black.copy(alpha = 0.4f), blurRadius = 6f)),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                val essential = when (entry) { is Album -> entry.name in model.essential; is AlbumGroup -> entry.albums.any { it.name in model.essential } }
+                if (essential) Icon(Sym.RoundedFilled.Star, null, tint = Color(0xFFF4B94F), modifier = Modifier.padding(start = 3.dp).size(14.dp))
+            }
+            Text(if (entry is AlbumGroup) "${entry.albums.size} albums" else "${entry.count}", fontSize = 13.sp, color = Color.White.copy(alpha = 0.75f),
+                modifier = Modifier.padding(top = 2.dp))
         }
-        Text(if (entry is AlbumGroup) "${entry.albums.size} albums" else "${entry.count}", fontSize = 12.sp, color = colors.textSecondary,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
+        if (model.selecting && !model.pickingGroup) {
+            if (on) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.25f)))
+            ElvanCheckMark(on, colors.link, Color.White, 22.dp, Modifier.align(Alignment.TopStart).padding(8.dp))
+        }
     }
 }
 
@@ -388,7 +459,7 @@ fun SortDialog(current: AlbumOrder, onDismiss: () -> Unit, onPick: (AlbumOrder) 
 fun AlbumPage(name: String, library: GalleryLibrary, nav: Navigator) {
     val media = remember(name, library.all) { library.album(name) }
     val title = library.albums?.let { m -> m.titles; library.settings.names[name] } ?: name
-    MediaGridPage(title, media, library, nav, "Nothing here", subtitle = mediaCountText(media))
+    MediaGridPage(title, media, library, nav, "Nothing here", subtitle = mediaCountText(media), plain = true)
 }
 
 /** The albums of one group. */

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The private safe's folder, shared one picture at a time through the provider -->
+<paths>
+    <files-path name="vault" path="vault/" />
+</paths>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Elvan Gallery: a rounded frame with a hill and a sun, white on black (Elvan Navil's monochrome) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="4.5" android:strokeLineJoin="round"
+        android:pathData="M40,34 L68,34 A8,8 0 0 1 76,42 L76,66 A8,8 0 0 1 68,74 L40,74 A8,8 0 0 1 32,66 L32,42 A8,8 0 0 1 40,34 Z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M34.5,67 L46,53 Q48,50.6 50,53 L56,60.5 L60,56 Q62,53.8 64,56 L73.5,67 Q74,70 71,71.5 L37,71.5 Q34,70 34.5,67 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M64,45 m-4.2,0 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0" />
+</vector>

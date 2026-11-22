@@ -97,9 +97,14 @@ import java.util.Locale
 
 /** Where each tile was last drawn on screen, so a photo can grow out of its tile and shrink back into it. */
 object HeroBounds {
-    val coords = HashMap<String, androidx.compose.ui.layout.LayoutCoordinates>()
-    fun rect(key: String): androidx.compose.ui.geometry.Rect? =
-        coords[key]?.takeIf { it.isAttached }?.boundsInWindow()
+    // Weak: a tile that has left the screen is not kept alive by the map
+    private val coords = HashMap<String, java.lang.ref.WeakReference<androidx.compose.ui.layout.LayoutCoordinates>>()
+    fun put(key: String, c: androidx.compose.ui.layout.LayoutCoordinates) {
+        coords[key] = java.lang.ref.WeakReference(c)
+        if (coords.size > 2000) coords.values.removeAll { it.get()?.isAttached != true }
+    }
+    fun get(key: String): androidx.compose.ui.layout.LayoutCoordinates? = coords[key]?.get()?.takeIf { it.isAttached }
+    fun rect(key: String): androidx.compose.ui.geometry.Rect? = get(key)?.boundsInWindow()
 }
 
 /**

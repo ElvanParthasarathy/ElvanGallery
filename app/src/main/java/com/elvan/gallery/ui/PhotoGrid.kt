@@ -37,6 +37,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -184,22 +186,15 @@ fun LazyGridScope.mediaItems(
  * [trackHero]: the tile tells the viewer where it is (off for copies drawn only while pinching).
  */
 fun MediaThumb(media: Media, selecting: Boolean, selected: Boolean, onClick: () -> Unit, onLongClick: (() -> Unit)?, modifier: Modifier = Modifier, showDuration: Boolean = true, square: Boolean = true, thumbPx: Int = 320, trackHero: Boolean = true) {
-    // A tile that leaves the screen stops holding its place, so the map never keeps layouts that are gone
-    if (trackHero) androidx.compose.runtime.DisposableEffect(media.uri) { onDispose { HeroBounds.coords.remove(media.uri) } }
     val colors = rememberShellColors()
-    val context = LocalContext.current
     Box(
         modifier.then(if (square) Modifier.aspectRatio(1f) else Modifier.fillMaxHeight())
             .clip(RoundedCornerShape(0.dp)).background(colors.surface)
-            .then(if (trackHero) Modifier.onPlaced { HeroBounds.coords[media.uri] = it } else Modifier)
+            .thumbnail(media.uri, thumbPx)
+            .then(if (trackHero) Modifier.onPlaced { HeroBounds.put(media.uri, it) } else Modifier)
+            .semantics { contentDescription = media.name }
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
-        AsyncImage(
-            model = remember(media.uri, thumbPx) { ImageRequest.Builder(context).data(thumbModel(media.uri)).size(thumbPx).placeholderMemoryCacheKey(thumbPlaceholder(media.uri)).build() },
-            contentDescription = media.name,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
         if (media.isVideo && showDuration) androidx.compose.foundation.layout.Row(
             Modifier.align(Alignment.BottomStart).padding(start = 5.dp, bottom = 5.dp),
             verticalAlignment = Alignment.CenterVertically

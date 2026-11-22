@@ -192,7 +192,7 @@ fun DatedMediaGrid(
         var best: Pair<String, androidx.compose.ui.geometry.Rect>? = null
         var bestDist = Float.MAX_VALUE
         onScreen.forEach { uri ->
-            val c = HeroBounds.coords[uri]?.takeIf { it.isAttached } ?: return@forEach
+            val c = HeroBounds.get(uri) ?: return@forEach
             val r = gc.localBoundingBoxOf(c, clipBounds = false)
             val dx = maxOf(r.left - f.x, 0f, f.x - r.right)
             val dy = maxOf(r.top - f.y, 0f, f.y - r.bottom)

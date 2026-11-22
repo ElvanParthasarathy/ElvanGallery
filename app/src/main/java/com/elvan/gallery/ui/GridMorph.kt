@@ -5,8 +5,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -47,8 +45,19 @@ class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineSco
     var settling by mutableStateOf(false)
     /** Where the fingers are, in the grid's pixels. */
     var focus = androidx.compose.ui.geometry.Offset.Zero
-    /** The tile under the fingers, if the page can tell; otherwise the first tile on screen stays put. */
-    var pickAnchor: ((androidx.compose.ui.geometry.Offset) -> Int?)? = null
+    /** How far down the anchor tile the fingers are (0 top, 1 bottom): that point stays under the fingers. */
+    var anchorFy = 0f
+    /**
+     * Called as a pinch begins with where the fingers are: the page picks the tile under them (setting [anchorFy],
+     * [sNow] and [scrollFor]) and returns its index; null leaves the first tile on screen as the anchor.
+     */
+    var begin: ((androidx.compose.ui.geometry.Offset) -> Int?)? = null
+    /** How far the page is scrolled now, in the page's own layout model. */
+    var sNow = 0f
+    /** How far the page will be scrolled at a level, so the anchor stays under the fingers (null: page has no model). */
+    var scrollFor: ((Int) -> Float)? = null
+    /** [scrollFor] worked out once per level for this pinch. */
+    val sThen = HashMap<Int, Float>()
 }
 
 fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, levels: List<Int>, firstTile: Int, onChange: (Int) -> Unit): Modifier =
@@ -64,19 +73,25 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     if (event.changes.count { it.pressed } > 1) {
                         if (!pinched) {
-                            val c = event.calculateCentroid(useCurrent = true)
-                            if (c.isSpecified) morph.focus = c
-                            morph.anchor = morph.pickAnchor?.invoke(morph.focus) ?: (grid.firstVisibleItemIndex - firstTile).coerceAtLeast(0)
+                            // Midpoint of every finger down now (calculateCentroid skips a finger that has only just landed)
+                            val down = event.changes.filter { it.pressed }
+                            morph.focus = down.fold(androidx.compose.ui.geometry.Offset.Zero) { acc, ch -> acc + ch.position } / down.size.toFloat()
+                            morph.sThen.clear(); morph.scrollFor = null; morph.anchorFy = 0f
+                            morph.anchor = morph.begin?.invoke(morph.focus) ?: (grid.firstVisibleItemIndex - firstTile).coerceAtLeast(0)
                         }
                         pinched = true
                         zoom = (zoom * event.calculateZoom()).coerceIn(0.4f, 2.5f)
                         event.changes.forEach { it.consume() }
                         val at = levels.indexOf(columns)
-                        morph.target = when {
+                        val next = when {
                             zoom < 1f && at in 0 until levels.lastIndex -> levels[at + 1]
                             zoom > 1f && at > 0 -> levels[at - 1]
                             else -> null
                         }
+                        // Where the page will sit at that level is settled before anything is drawn toward it
+                        val plan = morph.scrollFor
+                        if (next != null && plan != null && next !in morph.sThen) morph.sThen[next] = plan(next)
+                        morph.target = next
                         val p = kotlin.math.abs(kotlin.math.ln(zoom)) / kotlin.math.ln(1.7f)
                         scope.launch { morph.progress.snapTo(if (morph.target == null) 0f else p.coerceIn(0f, 1f)) }
                     }
@@ -118,7 +133,14 @@ fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int): Modifier = g
         val then = slot(index, to, w, true)
         val thenAnchor = slot(morph.anchor, to, w, true)
         translationX = (then.left - now.left) * p
-        translationY = ((then.top - thenAnchor.top) - (now.top - nowAnchor.top)) * p
+        val sThen = morph.sThen[to]
+        translationY = if (morph.scrollFor != null && sThen != null) {
+            // Both levels on screen exactly: where the tile is now, and where the page will show it
+            ((then.top - sThen) - (now.top - morph.sNow)) * p
+        } else {
+            val fy = morph.anchorFy
+            ((then.top - (thenAnchor.top + fy * thenAnchor.height)) - (now.top - (nowAnchor.top + fy * nowAnchor.height))) * p
+        }
         scaleX = 1f + (then.width / now.width - 1f) * p
         scaleY = 1f + (then.height / now.height - 1f) * p
     }

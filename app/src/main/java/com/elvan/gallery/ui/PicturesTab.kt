@@ -7,7 +7,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.isSpecified
-import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -36,6 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
@@ -104,9 +105,18 @@ private fun groupByPattern(media: List<Media>, pattern: String): List<DayGroup> 
     return media.groupBy { f.format(Date((it.dateAdded ?: 0L) * 1000)) }.map { (label, items) -> DayGroup("$pattern:$label", label, items) }
 }
 
+/** Heights the layout model needs that only the screen knows: a date heading, the album cover, the count line. */
+private class Measured { var heading = 0f; var cover = 0f; var header = 0f }
+
+private fun thumbPxFor(level: Int) = when (level) { 20 -> 64; 12 -> 96; 9 -> 128; 7 -> 160; 4 -> 256; else -> 320 }
+
 /**
  * A grid of pictures under date headings: pinch to change how many to a row, hold a picture and
  * slide to select a run of them, tick a heading to select its whole day.
+ *
+ * A pinch moves every photo from where it is to where it will be at the next level, with the photo under the
+ * fingers held still; the next level is drawn faintly behind, so the space the photos leave is never empty, and when
+ * the fingers lift the page lands exactly where the photos did.
  */
 @Composable
 fun DatedMediaGrid(
@@ -122,49 +132,78 @@ fun DatedMediaGrid(
 ) {
     val context = LocalContext.current
     val colors = rememberShellColors()
-    val order = remember(media) { media.map { it.uri } }
+    val density = androidx.compose.ui.platform.LocalDensity.current
     val prefs = remember(context) { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
     val columnsKey = if (plain) "album_columns" else "pictures_density"
+    val levels = if (plain) albumColumnLevels else columnLevels
     var columns by remember { mutableIntStateOf(if (plain) prefs.getInt(columnsKey, 4).takeIf { it in albumColumnLevels } ?: 4 else savedColumns(context)) }
-    // Days keep their own proportions in rows; months and years are even squares under their own headings
-    val squares = plain || columns >= 4
-    val days = remember(media, columns) {
-        when {
-            plain -> emptyList()
-            columns == 20 -> groupByPattern(media, "yyyy")
-            columns == 9 -> groupByPattern(media, "MMM yyyy")
-            else -> groupByDay(media)
+    val topSpacer = com.elvan.navil.LocalElvanTopSpacerHeight.current + com.elvan.navil.Dimens.SectionSpacing
+    val measured = remember { Measured() }
+    val gridCoords = remember { arrayOfNulls<androidx.compose.ui.layout.LayoutCoordinates>(1) }
+    val mediaIndex = remember(media) { HashMap<String, Int>(media.size * 2).also { m -> media.forEachIndexed { i, it -> m[it.uri] = i } } }
+
+    // Groups and photo rows for each level, worked out once and kept
+    val groupCache = remember(media) { HashMap<Int, List<DayGroup>>() }
+    fun groupsFor(level: Int): List<DayGroup> = when {
+        plain -> listOf(DayGroup("all", "", media))
+        else -> groupCache.getOrPut(when (level) { 20 -> 20; 9 -> 9; else -> 0 }) {
+            when (level) { 20 -> groupByPattern(media, "yyyy"); 9 -> groupByPattern(media, "MMM yyyy"); else -> groupByDay(media) }
+        }
+    }
+    val rowCache = remember(media) { HashMap<String, List<List<Media>>>() }
+    fun rowsOf(g: DayGroup) = rowCache.getOrPut(g.key) { justifiedRows(g.media, 3) }
+    val rowByKey = remember(media) { HashMap<String, List<Media>>() }
+
+    // The exact layout of each level, as the grid will lay it out
+    val planCache = remember(media, plain) { HashMap<String, GridPlan>() }
+    fun plan(level: Int, width: Float): GridPlan {
+        val prefix = listOfNotNull(if (cover != null) measured.cover else null, if (header != null) measured.header else null)
+        val heading = if (measured.heading > 0f) measured.heading else with(density) { 42.dp.toPx() }
+        val key = "$level:$width:$heading:$prefix"
+        return planCache.getOrPut(key) {
+            with(density) { buildPlan(media, mediaIndex, level, plain, groupsFor(level), ::rowsOf, width, topSpacer, prefix, heading) }
         }
     }
     val animScope = androidx.compose.runtime.rememberCoroutineScope()
-    val pinch = remember { PinchZoom(animScope) }
-    val dayRows = remember(days, columns) { if (columns >= 4) emptyMap() else days.associate { it.key to justifiedRows(it.media, columns) } }
-    val thumbPx = when (columns) { 20 -> 64; 12 -> 96; 9 -> 128; 7 -> 160; 4 -> 256; else -> 320 }
-    val mediaIndex = remember(media) { HashMap<String, Int>(media.size * 2).also { m -> media.forEachIndexed { i, it -> m[it.uri] = i } } }
-    val pictureSlots = remember(media) { picturesSlots(media) }
-    val morph = remember(plain, pictureSlots) { GridMorph(if (plain) squareSlots else pictureSlots, animScope) }
-    // Grid index of each picture at this level (rows count once), to bring the pinched picture back under the fingers
-    val indexOf = remember(media, columns, days, cover != null, header != null) {
-        val map = HashMap<String, Int>()
-        var i = 1 + (if (cover != null) 1 else 0) + (if (header != null) 1 else 0)
-        if (plain) media.forEach { map[it.uri] = i++ }
-        else if (squares) days.forEach { d -> i++; d.media.forEach { map[it.uri] = i++ } }
-        else days.forEach { d -> i++; justifiedRows(d.media, columns).forEach { row -> row.forEach { map[it.uri] = i }; i++ } }
-        map
+    val morph = remember(media, plain) { GridMorph({ index, level, width, _ -> plan(level, width).rect.getOrNull(index)?.takeIf { it.width > 0f } ?: androidx.compose.ui.geometry.Rect(0f, 0f, 1f, 1f) }, animScope) }
+
+    // As a pinch begins: the photo under the fingers (or the nearest), where on it they are, and where the page is
+    morph.begin = begin@{ f ->
+        val gc = gridCoords[0]?.takeIf { it.isAttached } ?: return@begin null
+        val onScreen = grid.layoutInfo.visibleItemsInfo.flatMap { item ->
+            val k = item.key as? String ?: return@flatMap emptyList()
+            if (k in mediaIndex) listOf(k) else rowByKey[k]?.map { it.uri } ?: emptyList()
+        }
+        var best: Pair<String, androidx.compose.ui.geometry.Rect>? = null
+        var bestDist = Float.MAX_VALUE
+        onScreen.forEach { uri ->
+            val c = HeroBounds.coords[uri]?.takeIf { it.isAttached } ?: return@forEach
+            val r = gc.localBoundingBoxOf(c, clipBounds = false)
+            val dx = maxOf(r.left - f.x, 0f, f.x - r.right)
+            val dy = maxOf(r.top - f.y, 0f, f.y - r.bottom)
+            val d = dx * dx + dy * dy
+            if (d < bestDist) { bestDist = d; best = uri to r }
+        }
+        val (uri, r) = best ?: return@begin null
+        val a = mediaIndex[uri] ?: return@begin null
+        val width = morph.width
+        val fy = ((f.y - r.top) / r.height.coerceAtLeast(1f)).coerceIn(0f, 1f)
+        val atTop = grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset == 0
+        morph.anchorFy = fy
+        morph.sNow = plan(columns, width).rect[a].top - r.top
+        morph.scrollFor = { level ->
+            // At the very top the page stays at the top (the header stays open); otherwise the photo stays under the fingers
+            if (atTop) 0f else plan(level, width).rect[a].let { it.top + fy * it.height - f.y }.coerceAtLeast(0f)
+        }
+        a
     }
-    var anchor by remember { androidx.compose.runtime.mutableStateOf<Pair<String, Int>?>(null) }
-    LaunchedEffect(columns) {
-        val (uri, top) = anchor ?: return@LaunchedEffect
-        anchor = null
-        val at = indexOf[uri] ?: return@LaunchedEffect
-        grid.scrollToItem(at)
-        grid.scrollBy(-top.toFloat())
-    }
+
     // For the fast-scroll bubble: each picture's (and each day row's) date, and where each year begins
-    val dateOf = remember(media, days) {
+    val days = groupsFor(columns)
+    val dateOf = remember(media, columns) {
         val map = HashMap<Any, Media>()
         media.forEach { map[it.uri] = it }
-        days.forEach { d -> justifiedRows(d.media, columns).forEachIndexed { i, row -> map["${d.key}_row_$i"] = row.first() } }
+        if (!plain && columns == 3) days.forEach { d -> rowsOf(d).forEachIndexed { i, row -> map["${d.key}_row_$i"] = row.first() } }
         map
     }
     val years = remember(media) {
@@ -173,85 +212,58 @@ fun DatedMediaGrid(
             .map { (y, items) -> items.first().index.toFloat() / media.size to y }
     }
 
-    // The picture under the fingers, and how far down the screen it sits
-    fun underFingers(f: androidx.compose.ui.geometry.Offset): Pair<String, Int>? =
-        grid.layoutInfo.visibleItemsInfo.firstOrNull { f.y >= it.offset.y && f.y < it.offset.y + it.size.height && f.x >= it.offset.x && f.x < it.offset.x + it.size.width }
-            ?.let { item -> (item.key as? String)?.let { k -> dateOf[k]?.uri ?: k.takeIf { u -> u in indexOf } }?.let { uri -> uri to item.offset.y } }
-    if (!plain) morph.pickAnchor = { f -> underFingers(f)?.first?.let { mediaIndex[it] } }
-
-    ElvanGrid(
-        grid, columns = if (squares) columns else 1,
-        dateLabel = { key -> dateOf[key]?.let { bubbleDate(it) } }, yearMarks = years, gap = if (squares) 1.dp else 0.5.dp, sidePadding = 0.dp,
-        modifier = if (plain) Modifier.pinchMorph(morph, grid, columns, albumColumnLevels, 1 + (if (cover != null) 1 else 0) + (if (header != null) 1 else 0)) {
-            columns = it
-            prefs.edit().putInt(columnsKey, it).apply()
-        } else Modifier.pinchMorph(morph, grid, columns, columnLevels, 1) {
-            // After the change, scroll so the pinched picture is where it was; at the very top the page stays put
-            anchor = if (grid.firstVisibleItemIndex == 0) null else underFingers(morph.focus)
-            columns = it
-            prefs.edit().putInt(columnsKey, it).apply()
+    /** The items of one level; [live] is the real grid, otherwise the faint copy of the next level drawn during a pinch. */
+    fun androidx.compose.foundation.lazy.grid.LazyGridScope.levelContent(level: Int, live: Boolean) {
+        val tp = thumbPxFor(level)
+        val squares = plain || level >= 4
+        if (cover != null) item(key = "page_cover", span = { GridItemSpan(maxLineSpan) }) {
+            Box(if (live) Modifier.onSizeChanged { measured.cover = it.height.toFloat() } else Modifier) { cover() }
         }
-    ) {
-        if (cover != null) item(key = "page_cover", span = { GridItemSpan(maxLineSpan) }) { cover() }
-        if (header != null) item(key = "page_header", span = { GridItemSpan(maxLineSpan) }) { CountLine(header) }
-        if (plain) {
-            items(media.size, key = { media[it].uri }, contentType = { "media" }) { i ->
-                val m = media[i]
-                MediaThumb(
-                    m, selection.active, m.uri in selection.selected,
-                    onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, i) },
-                    onLongClick = { selection.toggle(m.uri) },
-                    modifier = Modifier.morphTile(morph, i, columns),
-                    thumbPx = thumbPx
-                )
+        if (header != null) item(key = "page_header", span = { GridItemSpan(maxLineSpan) }) {
+            Box(if (live) Modifier.onSizeChanged { measured.header = it.height.toFloat() } else Modifier) { CountLine(header) }
+        }
+        fun tile(m: Media, i: Int, mod: Modifier, square: Boolean) = @Composable {
+            MediaThumb(
+                m, selection.active, m.uri in selection.selected, showDuration = level < 9,
+                onClick = { if (!live) Unit else if (selection.active) selection.toggle(m.uri) else onOpen(media, i) },
+                onLongClick = if (live) ({ selection.toggle(m.uri) }) else null,
+                square = square,
+                modifier = if (live) mod.morphTile(morph, i, level) else mod,
+                thumbPx = tp, trackHero = live
+            )
+        }
+        groupsFor(level).forEach { group ->
+            if (!plain) item(key = group.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") {
+                Box(
+                    Modifier.then(if (live) Modifier.onSizeChanged { measured.heading = it.height.toFloat() }.graphicsLayer {
+                        alpha = morph.target.let { t -> if (t != null && t != level) 1f - morph.progress.value else 1f }
+                    } else Modifier)
+                ) { DayHeading(group, selection, colors) }
             }
-            return@ElvanGrid
-        }
-        if (squares) {
-            days.forEach { group ->
-                item(key = group.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") {
-                    Box(Modifier.graphicsLayer { alpha = if (morph.target != null) 1f - morph.progress.value else 1f }) { DayHeading(group, selection, colors) }
+            if (squares) {
+                items(group.media.size, key = { group.media[it].uri }, contentType = { "media" }) { k ->
+                    val m = group.media[k]
+                    tile(m, mediaIndex[m.uri] ?: 0, Modifier, true)()
                 }
-                items(group.media.size, key = { group.media[it].uri }, contentType = { "media" }) { i ->
-                    val m = group.media[i]
-                    MediaThumb(
-                        m, selection.active, m.uri in selection.selected, showDuration = columns < 9,
-                        onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, mediaIndex[m.uri] ?: 0) },
-                        onLongClick = { selection.toggle(m.uri) },
-                        modifier = Modifier.morphTile(morph, mediaIndex[m.uri] ?: 0, columns),
-                        thumbPx = thumbPx
-                    )
-                }
-            }
-            return@ElvanGrid
-        }
-        days.forEach { day ->
-            item(key = day.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") {
-                Box(Modifier.graphicsLayer { alpha = if (morph.target != null) 1f - morph.progress.value else 1f }) { DayHeading(day, selection, colors) }
-            }
-            val rows = dayRows[day.key] ?: justifiedRows(day.media, columns)
-            rows.forEachIndexed { rowIndex, rowMedia ->
-                item(key = "${day.key}_row_$rowIndex", contentType = "media_row") {
-                    BoxWithConstraints(Modifier.fillMaxWidth()) {
-                        val ratios = rowMedia.map { it.displayRatio() }
-                        // A day's short last row keeps the usual height and sits to the left, as Samsung's does
-                        val usual = columns * 0.72f
-                        val short = rowIndex == rows.lastIndex && rowMedia.size < columns && ratios.sum() < usual * 0.8f
-                        val rowHeight = maxWidth / (if (short) usual else ratios.sum().coerceAtLeast(0.5f))
-                        Row(
-                            Modifier.fillMaxWidth().height(rowHeight),
-                            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(0.5.dp)
-                        ) {
-                            rowMedia.forEachIndexed { index, m ->
-                                MediaThumb(
-                                    m, selection.active, m.uri in selection.selected, showDuration = true,
-                                    onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, mediaIndex[m.uri] ?: 0) },
-                                    onLongClick = { selection.toggle(m.uri) },
-                                    square = false,
-                                    modifier = (if (short) Modifier.width(rowHeight * ratios[index]) else Modifier.weight(ratios[index]))
-                                        .morphTile(morph, mediaIndex[m.uri] ?: 0, columns),
-                                    thumbPx = thumbPx
-                                )
+            } else {
+                val rows = rowsOf(group)
+                rows.forEachIndexed { rowIndex, rowMedia ->
+                    val rowKey = "${group.key}_row_$rowIndex"
+                    if (live) rowByKey[rowKey] = rowMedia
+                    item(key = rowKey, contentType = "media_row") {
+                        BoxWithConstraints(Modifier.fillMaxWidth()) {
+                            val ratios = rowMedia.map { it.displayRatio() }
+                            // A day's short last row keeps the usual height and sits to the left, as Samsung's does
+                            val usual = level * 0.72f
+                            val short = rowIndex == rows.lastIndex && rowMedia.size < level && ratios.sum() < usual * 0.8f
+                            val rowHeight = maxWidth / (if (short) usual else ratios.sum().coerceAtLeast(0.5f))
+                            Row(
+                                Modifier.fillMaxWidth().height(rowHeight),
+                                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(0.5.dp)
+                            ) {
+                                rowMedia.forEachIndexed { index, m ->
+                                    tile(m, mediaIndex[m.uri] ?: 0, if (short) Modifier.width(rowHeight * ratios[index]) else Modifier.weight(ratios[index]), false)()
+                                }
                             }
                         }
                     }
@@ -259,6 +271,103 @@ fun DatedMediaGrid(
             }
         }
     }
+
+    val gapFor = { level: Int -> if (plain || level >= 4) 1.dp else 0.5.dp }
+    ElvanGrid(
+        grid, columns = if (plain || columns >= 4) columns else 1,
+        dateLabel = { key -> dateOf[key]?.let { bubbleDate(it) } }, yearMarks = years, gap = gapFor(columns), sidePadding = 0.dp,
+        modifier = Modifier.onPlaced { gridCoords[0] = it }
+            .pinchMorph(morph, grid, columns, levels, 1 + (if (cover != null) 1 else 0) + (if (header != null) 1 else 0)) { next ->
+                // The new level starts exactly where the photos were carried to, in the same frame
+                morph.sThen[next]?.let { s -> plan(next, morph.width).itemAt(s).let { (i, o) -> grid.requestScrollToItem(i, o) } }
+                columns = next
+                prefs.edit().putInt(columnsKey, next).apply()
+            },
+        behind = {
+            // The next level, faint behind the moving photos, already scrolled to where the page will land
+            val t = morph.target
+            val s = t?.let { morph.sThen[it] }
+            if (t != null && t != columns && s != null && morph.width > 0f) androidx.compose.runtime.key(t) {
+                val (i, o) = remember { plan(t, morph.width).itemAt(s) }
+                val preview = androidx.compose.foundation.lazy.grid.rememberLazyGridState(i, o)
+                ElvanGridLayer(
+                    preview, if (plain || t >= 4) t else 1,
+                    Modifier.fillMaxSize().graphicsLayer { alpha = (morph.progress.value * 1.6f).coerceAtMost(1f) },
+                    gapFor(t), 0.dp, userScroll = false
+                ) { levelContent(t, live = false) }
+            }
+        }
+    ) { levelContent(columns, live = true) }
+}
+
+/** One level of a photo grid, laid out as the lazy grid lays it out: every item's top and every photo's rectangle, in content pixels. */
+class GridPlan(private val tops: FloatArray, val rect: Array<androidx.compose.ui.geometry.Rect>) {
+    /** The item to scroll to, and how far into it, so the content [scroll] pixels down is at the top of the screen. */
+    fun itemAt(scroll: Float): Pair<Int, Int> {
+        var lo = 0
+        var hi = tops.size - 1
+        while (lo < hi) { val mid = (lo + hi + 1) / 2; if (tops[mid] <= scroll) lo = mid else hi = mid - 1 }
+        return lo to (scroll - tops[lo]).toInt().coerceAtLeast(0)
+    }
+}
+
+/**
+ * Lays a level out the way LazyVerticalGrid does: the shell's spacer, any cover and count line, then each group's
+ * heading and its photos (squares split the width as GridCells.Fixed does; rows are the photo-shaped rows), lines
+ * [gap] apart, sizes rounded to whole pixels as the grid rounds them.
+ */
+internal fun androidx.compose.ui.unit.Density.buildPlan(
+    media: List<Media>, mediaIndex: Map<String, Int>, level: Int, plain: Boolean, groups: List<DayGroup>,
+    rowsOf: (DayGroup) -> List<List<Media>>, width: Float, topSpacer: androidx.compose.ui.unit.Dp, prefix: List<Float>, heading: Float
+): GridPlan {
+    val gapDp = if (plain || level >= 4) 1.dp else 0.5.dp
+    val gap = gapDp.roundToPx().toFloat()
+    val tops = ArrayList<Float>(media.size + groups.size + 4)
+    val rects = Array(media.size) { androidx.compose.ui.geometry.Rect.Zero }
+    var y = 0f
+    tops += 0f
+    y += (topSpacer - gapDp).roundToPx().coerceAtLeast(0) + gap
+    prefix.forEach { h -> tops += y; y += h + gap }
+    val squares = plain || level >= 4
+    val total = (width - gap * (level - 1)).toInt()
+    val slot = total / level
+    val rem = total % level
+    val xs = FloatArray(level)
+    val ws = IntArray(level)
+    run { var x = 0f; for (c in 0 until level) { ws[c] = slot + if (c < rem) 1 else 0; xs[c] = x; x += ws[c] + gap } }
+    val lineH = slot + if (rem > 0) 1 else 0
+    val rowGap = 0.5.dp.roundToPx().toFloat()
+    groups.forEach { g ->
+        if (!plain) { tops += y; y += heading + gap }
+        if (squares) {
+            g.media.forEachIndexed { k, m ->
+                val c = k % level
+                if (c == 0 && k > 0) y += lineH + gap
+                tops += y
+                mediaIndex[m.uri]?.let { rects[it] = androidx.compose.ui.geometry.Rect(xs[c], y, xs[c] + ws[c], y + ws[c]) }
+            }
+            if (g.media.isNotEmpty()) y += lineH + gap
+        } else {
+            val rows = rowsOf(g)
+            rows.forEachIndexed { r, row ->
+                tops += y
+                val ratios = row.map { it.displayRatio() }
+                val sum = ratios.sum()
+                val usual = level * 0.72f
+                val short = r == rows.lastIndex && row.size < level && sum < usual * 0.8f
+                val h = kotlin.math.round(width / (if (short) usual else sum.coerceAtLeast(0.5f)))
+                val free = width - (row.size - 1) * rowGap
+                var x = 0f
+                row.forEachIndexed { k, m ->
+                    val w = if (short) h * ratios[k] else free * ratios[k] / sum
+                    mediaIndex[m.uri]?.let { rects[it] = androidx.compose.ui.geometry.Rect(x, y, x + w, y + h) }
+                    x += w + rowGap
+                }
+                y += h + gap
+            }
+        }
+    }
+    return GridPlan(tops.toFloatArray(), rects)
 }
 
 private fun Media.displayRatio(): Float =
@@ -310,128 +419,6 @@ private fun bubbleDate(m: Media): String {
         day == now -> "Today"
         cal.get(Calendar.YEAR) == year -> SimpleDateFormat("d MMM", Locale.ENGLISH).format(cal.time)
         else -> SimpleDateFormat("d MMM yyyy", Locale.ENGLISH).format(cal.time)
-    }
-}
-
-/**
- * Where each picture sits at each Pictures level, measured from the top of the content: days in photo-shaped rows (3),
- * days in squares (4), months (9) or years (20) in squares, each group under a 42 dp heading. Worked out once per level.
- */
-private fun picturesSlots(media: List<Media>): GridSlots {
-    val cache = HashMap<Long, Array<androidx.compose.ui.geometry.Rect>>()
-    return GridSlots { index, columns, width, _ ->
-        val key = columns.toLong() shl 32 or width.toLong()
-        val all = cache.getOrPut(key) {
-            val out = Array(media.size) { androidx.compose.ui.geometry.Rect.Zero }
-            val at = HashMap<String, Int>(media.size * 2).also { m -> media.forEachIndexed { i, it -> m[it.uri] = i } }
-            val heading = 42.dp.toPx()
-            val groups = when (columns) { 20 -> groupByPattern(media, "yyyy"); 9 -> groupByPattern(media, "MMM yyyy"); else -> groupByDay(media) }
-            var y = 0f
-            if (columns >= 4) {
-                val g = 1.dp.toPx()
-                val w = (width - (columns - 1) * g) / columns
-                groups.forEach { grp ->
-                    y += heading + g
-                    grp.media.forEachIndexed { k, m ->
-                        val x = (k % columns) * (w + g)
-                        val top = y + (k / columns) * (w + g)
-                        at[m.uri]?.let { out[it] = androidx.compose.ui.geometry.Rect(x, top, x + w, top + w) }
-                    }
-                    y += ((grp.media.size + columns - 1) / columns) * (w + g)
-                }
-            } else {
-                val g = 0.5.dp.toPx()
-                groups.forEach { grp ->
-                    y += heading + g
-                    val rows = justifiedRows(grp.media, columns)
-                    rows.forEachIndexed { r, row ->
-                        val ratios = row.map { it.displayRatio() }
-                        val usual = columns * 0.72f
-                        val short = r == rows.lastIndex && row.size < columns && ratios.sum() < usual * 0.8f
-                        val h = width / (if (short) usual else ratios.sum().coerceAtLeast(0.5f))
-                        val free = width - (row.size - 1) * g
-                        var x = 0f
-                        row.forEachIndexed { k, m ->
-                            val w = if (short) h * ratios[k] else free * ratios[k] / ratios.sum()
-                            at[m.uri]?.let { out[it] = androidx.compose.ui.geometry.Rect(x, y, x + w, y + h) }
-                            x += w + g
-                        }
-                        y += h + g
-                    }
-                }
-            }
-            out
-        }
-        all.getOrElse(index) { androidx.compose.ui.geometry.Rect.Zero }.let { if (it.width <= 0f) androidx.compose.ui.geometry.Rect(0f, 0f, 1f, 1f) else it }
-    }
-}
-
-private val squareSlots = GridSlots { index, columns, width, _ ->
-    val gap = 1.dp.toPx()
-    val w = (width - (columns - 1) * gap) / columns
-    val x = (index % columns) * (w + gap)
-    val y = (index / columns) * (w + gap)
-    androidx.compose.ui.geometry.Rect(x, y, x + w, y + w)
-}
-
-/** How far the fingers have pinched, and where: the grid is drawn scaled by this so it follows them. */
-class PinchZoom(val scope: kotlinx.coroutines.CoroutineScope) {
-    val scale = androidx.compose.animation.core.Animatable(1f)
-    var origin by androidx.compose.runtime.mutableStateOf(androidx.compose.ui.graphics.TransformOrigin.Center)
-    /** Where the fingers are, in the grid's pixels. */
-    var focus = androidx.compose.ui.geometry.Offset.Zero
-}
-
-fun Modifier.pinchScaled(pinch: PinchZoom): Modifier = graphicsLayer {
-    scaleX = pinch.scale.value; scaleY = pinch.scale.value; transformOrigin = pinch.origin
-}
-
-/**
- * Two fingers: the grid grows or shrinks under them as they move. On lifting, a spread or pinch past about a fifth steps
- * to the next level; the new grid starts at the size the fingers left it and eases into place, so the change reads as
- * one continuous zoom. One finger is left to the scroll.
- */
-fun Modifier.pinchLevels(pinch: PinchZoom, columns: Int, levels: List<Int>, onChange: (Int) -> Unit): Modifier = pointerInput(columns, levels) {
-    val settle = androidx.compose.animation.core.spring<Float>(dampingRatio = 0.9f, stiffness = 380f)
-    run {
-        val scope = pinch.scope
-        awaitEachGesture {
-            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-            var zoom = 1f
-            var pinched = false
-            do {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                if (event.changes.count { it.pressed } > 1) {
-                    pinched = true
-                    zoom = (zoom * event.calculateZoom()).coerceIn(0.5f, 2f)
-                    val c = event.calculateCentroid(useCurrent = true)
-                    if (c.isSpecified && size.width > 0) {
-                        pinch.origin = androidx.compose.ui.graphics.TransformOrigin(c.x / size.width, c.y / size.height)
-                        pinch.focus = c
-                    }
-                    event.changes.forEach { it.consume() }
-                    val z = zoom
-                    scope.launch { pinch.scale.snapTo(z.coerceIn(0.7f, 1.4f)) }
-                } else if (pinched) event.changes.forEach { it.consume() }
-            } while (event.changes.any { it.pressed })
-            if (!pinched) return@awaitEachGesture
-            val at = levels.indexOf(columns)
-            val next = when {
-                zoom > 1.2f && at > 0 -> levels[at - 1]
-                zoom < 0.83f && at in 0 until levels.lastIndex -> levels[at + 1]
-                else -> null
-            }
-            val shown = zoom.coerceIn(0.7f, 1.4f)
-            scope.launch {
-                if (next != null) {
-                    onChange(next)
-                    // A list (1) is drawn about as dense as 4 across
-                    fun across(c: Int) = if (c == 1) 4f else c.toFloat()
-                    pinch.scale.snapTo((shown * across(next) / across(columns)).coerceIn(0.4f, 2.5f))
-                }
-                pinch.scale.animateTo(1f, settle)
-            }
-        }
     }
 }
 

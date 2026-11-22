@@ -7,3 +7,5 @@ local.properties
 .DS_Store
 captures/
 .cxx/
+tools/pinch/out/
+tools/pinch/pinch.dex

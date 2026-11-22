@@ -73,22 +73,13 @@ fun ElvanGrid(
     dateLabel: ((Any) -> String?)? = null,
     /** Years marked down the fast-scroll track: where each starts (0 to 1) and its name. */
     yearMarks: List<Pair<Float, String>> = emptyList(),
+    /** Drawn behind the grid (a pinch shows the next level here, so the space the tiles leave is never empty). */
+    behind: (@Composable () -> Unit)? = null,
     content: LazyGridScope.() -> Unit
 ) {
-    val top = LocalElvanTopSpacerHeight.current + Dimens.SectionSpacing
-    val bottom = LocalPortraitPageBottom.current ?: 24.dp
     Box(modifier.fillMaxSize()) {
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(columns),
-            state = state,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = sidePadding, end = sidePadding, bottom = bottom),
-            horizontalArrangement = Arrangement.spacedBy(gap),
-            verticalArrangement = Arrangement.spacedBy(gap)
-        ) {
-            item(key = "shell_top_spacer", span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(top - gap)) }
-            content()
-        }
+        behind?.invoke()
+        ElvanGridLayer(state, columns, Modifier.fillMaxSize(), gap, sidePadding, userScroll = true, content = content)
         GridFastScroller(state, Modifier.align(Alignment.CenterEnd), dateLabel, yearMarks)
         // Samsung: while the grid scrolls, the date at the top floats in a grey pill under the buttons
         if (dateLabel != null) {
@@ -188,14 +179,19 @@ fun LazyGridScope.mediaItems(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-/** [thumbPx]: how big a thumbnail to decode; dense grids ask for small ones so hundreds of tiles stay cheap to draw. */
-fun MediaThumb(media: Media, selecting: Boolean, selected: Boolean, onClick: () -> Unit, onLongClick: (() -> Unit)?, modifier: Modifier = Modifier, showDuration: Boolean = true, square: Boolean = true, thumbPx: Int = 320) {
+/**
+ * [thumbPx]: how big a thumbnail to decode; dense grids ask for small ones so hundreds of tiles stay cheap to draw.
+ * [trackHero]: the tile tells the viewer where it is (off for copies drawn only while pinching).
+ */
+fun MediaThumb(media: Media, selecting: Boolean, selected: Boolean, onClick: () -> Unit, onLongClick: (() -> Unit)?, modifier: Modifier = Modifier, showDuration: Boolean = true, square: Boolean = true, thumbPx: Int = 320, trackHero: Boolean = true) {
+    // A tile that leaves the screen stops holding its place, so the map never keeps layouts that are gone
+    if (trackHero) androidx.compose.runtime.DisposableEffect(media.uri) { onDispose { HeroBounds.coords.remove(media.uri) } }
     val colors = rememberShellColors()
     val context = LocalContext.current
     Box(
         modifier.then(if (square) Modifier.aspectRatio(1f) else Modifier.fillMaxHeight())
             .clip(RoundedCornerShape(0.dp)).background(colors.surface)
-            .onPlaced { HeroBounds.coords[media.uri] = it }
+            .then(if (trackHero) Modifier.onPlaced { HeroBounds.coords[media.uri] = it } else Modifier)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
         AsyncImage(
@@ -233,4 +229,26 @@ fun formatDuration(durationMs: Long): String {
     val minutes = seconds / 60
     return if (minutes >= 60) "%d:%02d:%02d".format(minutes / 60, minutes % 60, seconds % 60)
     else "%d:%02d".format(minutes, seconds % 60)
+}
+
+/** The grid itself: the shell's top spacer first, then [content]; shared by the live grid and a pinch's preview of the next level. */
+@Composable
+fun ElvanGridLayer(
+    state: LazyGridState, columns: Int, modifier: Modifier, gap: Dp, sidePadding: Dp, userScroll: Boolean,
+    content: LazyGridScope.() -> Unit
+) {
+    val top = LocalElvanTopSpacerHeight.current + Dimens.SectionSpacing
+    val bottom = LocalPortraitPageBottom.current ?: 24.dp
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(columns),
+        state = state,
+        modifier = modifier,
+        userScrollEnabled = userScroll,
+        contentPadding = PaddingValues(start = sidePadding, end = sidePadding, bottom = bottom),
+        horizontalArrangement = Arrangement.spacedBy(gap),
+        verticalArrangement = Arrangement.spacedBy(gap)
+    ) {
+        item(key = "shell_top_spacer", span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(top - gap)) }
+        content()
+    }
 }

@@ -345,6 +345,7 @@ private fun Filmstrip(models: List<Any>, current: Int, onPick: (Int) -> Unit) {
 /** The pictures viewer: favourite, edit, details, share, delete, rename, wallpaper, print. */
 @Composable
 fun MediaViewer(media: List<Media>, start: Int, closing: Boolean, onBack: () -> Unit, onClosed: () -> Unit, onDeleted: () -> Unit, onEdit: (Media) -> Unit = {}) {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val context = LocalContext.current
     val colors = rememberShellColors()
     var items by remember(media) { mutableStateOf(media) }
@@ -410,6 +411,12 @@ fun MediaViewer(media: List<Media>, start: Int, closing: Boolean, onBack: () -> 
                             try { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_EDIT).setDataAndType(uri, if (items[page].isVideo) "video/*" else "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null)) }
                             catch (e: Exception) { Toast.makeText(context, "No editor found!", Toast.LENGTH_SHORT).show() }
                         }),
+                        ElvanPopupMenuItem("Copy to clipboard", Sym.Rounded.Content_copy, {
+                            moreOpen = false
+                            context.getSystemService(android.content.ClipboardManager::class.java)
+                                ?.setPrimaryClip(android.content.ClipData.newUri(context.contentResolver, items[page].name, uri))
+                            Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                        }),
                         ElvanPopupMenuItem("Set as wallpaper", Sym.Rounded.Wallpaper, {
                             moreOpen = false
                             try {
@@ -418,6 +425,18 @@ fun MediaViewer(media: List<Media>, start: Int, closing: Boolean, onBack: () -> 
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 }, "Set as wallpaper"))
                             } catch (e: Exception) { Toast.makeText(context, "Unable to set wallpaper", Toast.LENGTH_SHORT).show() }
+                        }),
+                        ElvanPopupMenuItem("Move to private safe", Sym.Rounded.Lock, {
+                            moreOpen = false
+                            // A copy goes into the safe; the original then goes to the phone's trash with Android's own confirmation
+                            scope.launch {
+                                val kept = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.elvan.gallery.data.PrivateVault(context).add(uri) != null }
+                                if (!kept) Toast.makeText(context, "Could not move to private safe", Toast.LENGTH_SHORT).show()
+                                else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                    pendingDelete = page
+                                    systemDelete.launch(IntentSenderRequest.Builder(MediaStore.createTrashRequest(context.contentResolver, listOf(uri), true).intentSender).build())
+                                } else Toast.makeText(context, "Copied to private safe", Toast.LENGTH_SHORT).show()
+                            }
                         }),
                         ElvanPopupMenuItem("Print", MaterialSymbols.Rounded.Print, { moreOpen = false; printImage(context, uri) })
                     )

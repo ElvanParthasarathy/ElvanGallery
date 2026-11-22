@@ -66,6 +66,7 @@ sealed interface Page {
     data class Shortcut(val kind: MediaKind) : Page
     data object Trash : Page
     data object Search : Page
+    data class Slideshow(val media: List<Media>) : Page
     data class Story(val title: String, val media: List<Media>) : Page
     data class Editor(val uri: String, val video: Boolean) : Page
 }
@@ -127,6 +128,7 @@ private fun PageHost(entry: PageEntry, library: GalleryLibrary, nav: Navigator) 
         is Page.Shortcut -> MediaListPage(page.kind, library, nav)
         Page.Trash -> TrashPage(library, nav)
         Page.Search -> SearchPage(library, nav)
+        is Page.Slideshow -> SlideshowPage(page.media, onClose = nav::back)
         is Page.Story -> MediaGridPage(page.title, page.media, library, nav, "Nothing here")
     }
 }
@@ -161,7 +163,10 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
     val tabMenu = buildList {
         fun close() { ElvanMenuState.isMenuOpen = false; menuOpen = false }
         when (tab) {
-            GalleryTab.Pictures -> if (pictures.isNotEmpty()) add(ElvanPopupMenuItem("Select", MaterialSymbols.Rounded.CheckCircle, { close(); pictureSelection.active = true }))
+            GalleryTab.Pictures -> if (pictures.isNotEmpty()) {
+                add(ElvanPopupMenuItem("Select", MaterialSymbols.Rounded.CheckCircle, { close(); pictureSelection.active = true }))
+                add(ElvanPopupMenuItem("Start slideshow", Sym.Rounded.Slideshow, { close(); nav.open(Page.Slideshow(pictures)) }))
+            }
             GalleryTab.Albums -> if (albums != null) {
                 add(ElvanPopupMenuItem("Select", MaterialSymbols.Rounded.CheckCircle, { close(); albums.startSelecting() }))
                 if (albums.onlyEssential) add(ElvanPopupMenuItem("Essential albums", Sym.Rounded.Star, { close(); albums.chooseEssential() }))
@@ -254,9 +259,8 @@ private fun MainTabs(library: GalleryLibrary, nav: Navigator) {
         val grid = gridStates.getValue(tab)
         if (searchMode) SearchTab(library, grid, nav) else when (tab) {
             GalleryTab.Pictures ->
-                if (!library.loaded) SkeletonGrid(grid)
-                else DatedMediaGrid(pictures, grid, pictureSelection) { list, i -> nav.open(Page.Viewer(list, i)) }
-            GalleryTab.Albums -> if (albums == null) SkeletonGrid(grid, columns = 3) else AlbumsTab(library, grid, nav)
+                if (library.loaded) DatedMediaGrid(pictures, grid, pictureSelection) { list, i -> nav.open(Page.Viewer(list, i)) }
+            GalleryTab.Albums -> if (albums != null) AlbumsTab(library, grid, nav)
         }
     }
     if (library.showSortSheet) albums?.let { a -> SortDialog(a.order, { library.showSortSheet = false }) { a.changeOrder(it) } }

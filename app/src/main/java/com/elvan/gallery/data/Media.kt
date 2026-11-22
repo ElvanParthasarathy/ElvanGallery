@@ -21,7 +21,8 @@ object MediaQuery {
     private const val DURATION = "duration" // MediaColumns.DURATION is API 29+; the column itself is older
     private const val TAKEN = "datetaken" // milliseconds; Samsung Gallery dates and orders by this
 
-    fun all(context: Context): List<Media> {
+    /** [limit]: only the newest that many, so the first screen can show while the rest are read. */
+    fun all(context: Context, limit: Int? = null): List<Media> {
         val files = MediaStore.Files.getContentUri("external")
         val columns = arrayOf(
             MediaStore.Files.FileColumns._ID,
@@ -36,7 +37,13 @@ object MediaQuery {
         )
         val kinds = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE}, ${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO})"
         val out = ArrayList<Media>()
-        context.contentResolver.query(files, columns, kinds, null, "COALESCE($TAKEN, ${MediaStore.Files.FileColumns.DATE_ADDED} * 1000) DESC")?.use { c ->
+        val sort = "COALESCE($TAKEN, ${MediaStore.Files.FileColumns.DATE_ADDED} * 1000) DESC"
+        val cursor = if (limit != null && android.os.Build.VERSION.SDK_INT >= 30) context.contentResolver.query(files, columns, android.os.Bundle().apply {
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, kinds)
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, sort)
+            putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
+        }, null) else context.contentResolver.query(files, columns, kinds, null, sort)
+        cursor?.use { c ->
             val id = c.getColumnIndexOrThrow(columns[0])
             val name = c.getColumnIndexOrThrow(columns[1])
             val type = c.getColumnIndexOrThrow(columns[2])

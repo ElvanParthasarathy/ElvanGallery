@@ -106,7 +106,8 @@ fun AlbumsTab(library: GalleryLibrary, grid: LazyGridState, nav: Navigator) {
     val prefs = remember(context) { context.getSharedPreferences("gallery_prefs", android.content.Context.MODE_PRIVATE) }
     // 1 is the list (thumbnail, name and count in rows); pinching in goes 2 -> 3 -> 4 -> list
     var columns by remember { androidx.compose.runtime.mutableIntStateOf(prefs.getInt("albums_columns", 3).takeIf { it in albumLevels } ?: 3) }
-    val morph = remember { GridMorph(albumSlots) }
+    val animScope = androidx.compose.runtime.rememberCoroutineScope()
+    val morph = remember { GridMorph(albumSlots, animScope) }
     // The shell's spacer and the "All albums" heading come before the first album
     val firstTile = if (model.choosingEssential) 1 else 2
     ElvanGrid(grid, columns = columns, gap = if (columns == 1) 0.dp else 10.dp, sidePadding = 10.dp,
@@ -137,8 +138,7 @@ private val albumSlots = GridSlots { index, columns, width, target ->
     val side = 10.dp.toPx()
     if (columns == 1) {
         val row = 76.dp.toPx()
-        if (target) Rect(side, index * row + 6.dp.toPx(), side + 64.dp.toPx(), index * row + 70.dp.toPx())
-        else Rect(side, index * row, width - side, (index + 1) * row)
+        Rect(side, index * row + 6.dp.toPx(), side + 64.dp.toPx(), index * row + 70.dp.toPx())
     } else {
         val gap = 10.dp.toPx()
         val w = (width - 2 * side - (columns - 1) * gap) / columns
@@ -161,16 +161,18 @@ fun LazyGridScope.albumTiles(model: AlbumsModel, entries: List<AlbumEntry>, nav:
                     translationY = drag.finger.y - drag.grab.y - (it.offset.y - info.viewportStartOffset)
                 }
                 scaleX = 1.06f; scaleY = 1.06f
-            } else (if (morph?.settling == true) Modifier.animateItem(placementSpec = null) else Modifier.animateItem())
-                .then(if (morph != null) Modifier.morphTile(morph, index, columns) else Modifier),
-            asList
+            // Tiles glide to new places only while albums are being rearranged; otherwise they move with the page and header
+            } else (if (drag?.key != null && morph?.settling != true) Modifier.animateItem() else Modifier)
+                // In the list only the small cover moves (see AlbumTile); a whole row is never stretched into a tile
+                .then(if (morph != null && !asList) Modifier.morphTile(morph, index, columns) else Modifier),
+            asList, morph, index, columns
         )
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, modifier: Modifier = Modifier, asList: Boolean = false) {
+private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, modifier: Modifier = Modifier, asList: Boolean = false, morph: GridMorph? = null, index: Int = 0, columns: Int = 3) {
     val colors = rememberShellColors()
     val on = entry.key in model.selected
     val dimmed = model.pickingGroup && entry is Album
@@ -191,14 +193,14 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
                 .combinedClickable(enabled = !dimmed, onClick = onClick, onLongClick = onLongClick).padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(colors.surface)) {
+            Box((if (morph != null) Modifier.zIndex(1f).morphTile(morph, index, columns) else Modifier).size(64.dp).clip(RoundedCornerShape(12.dp)).background(colors.surface)) {
                 when (entry) {
                     is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize())
                     is AlbumGroup -> GroupCover(entry, colors)
                 }
                 if (model.selecting && !model.pickingGroup) ElvanCheckMark(on, colors.link, Color.White, 20.dp, Modifier.align(Alignment.TopStart).padding(4.dp))
             }
-            Column(Modifier.padding(start = 14.dp).weight(1f)) {
+            Column(Modifier.padding(start = 14.dp).weight(1f).graphicsLayer { alpha = if (morph?.target != null) 1f - morph.progress.value else 1f }) {
                 Text(model.title(entry), fontSize = 16.sp, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (entry is AlbumGroup) "${entry.albums.size} albums" else "${entry.count}", fontSize = 13.sp, color = colors.textSecondary, modifier = Modifier.padding(top = 2.dp))
             }

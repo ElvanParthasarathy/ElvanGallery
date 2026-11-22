@@ -25,6 +25,11 @@ class GalleryLibrary(private val context: Context, private val scope: CoroutineS
 
     fun reload() {
         scope.launch {
+            // The newest few hundred first, so the first screen shows at once (as a phone gallery does); then everything
+            if (!loaded) {
+                val first = withContext(Dispatchers.IO) { MediaQuery.all(context, limit = 300) }
+                if (first.isNotEmpty()) { all = first; loaded = true }
+            }
             val media = withContext(Dispatchers.IO) { MediaQuery.all(context) }
             all = media
             loaded = true

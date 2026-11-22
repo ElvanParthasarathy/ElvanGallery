@@ -5,6 +5,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -35,7 +37,7 @@ fun interface GridSlots {
  * Samsung's pinch: as the fingers move, every tile shrinks or grows and slides toward its place in the next
  * layout, in step with the fingers; let go past about a third of the way and it finishes, otherwise it springs back.
  */
-class GridMorph(val slots: GridSlots) {
+class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineScope) {
     val progress = Animatable(0f)
     var target by mutableStateOf<Int?>(null)
     /** The first tile on screen when the pinch began: it stays put and the rest move around it. */
@@ -43,13 +45,17 @@ class GridMorph(val slots: GridSlots) {
     var width by mutableFloatStateOf(0f)
     /** Just after a level change: tiles land where they are instead of animating there a second time. */
     var settling by mutableStateOf(false)
+    /** Where the fingers are, in the grid's pixels. */
+    var focus = androidx.compose.ui.geometry.Offset.Zero
+    /** The tile under the fingers, if the page can tell; otherwise the first tile on screen stays put. */
+    var pickAnchor: ((androidx.compose.ui.geometry.Offset) -> Int?)? = null
 }
 
 fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, levels: List<Int>, firstTile: Int, onChange: (Int) -> Unit): Modifier =
     onSizeChanged { morph.width = it.width.toFloat() }.pointerInput(columns, levels, firstTile) {
         val finish = spring<Float>(dampingRatio = 0.95f, stiffness = 520f)
-        coroutineScope {
-            val scope = this
+        run {
+            val scope = morph.scope
             awaitEachGesture {
                 awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                 var zoom = 1f
@@ -57,7 +63,11 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                 do {
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     if (event.changes.count { it.pressed } > 1) {
-                        if (!pinched) morph.anchor = (grid.firstVisibleItemIndex - firstTile).coerceAtLeast(0)
+                        if (!pinched) {
+                            val c = event.calculateCentroid(useCurrent = true)
+                            if (c.isSpecified) morph.focus = c
+                            morph.anchor = morph.pickAnchor?.invoke(morph.focus) ?: (grid.firstVisibleItemIndex - firstTile).coerceAtLeast(0)
+                        }
                         pinched = true
                         zoom = (zoom * event.calculateZoom()).coerceIn(0.4f, 2.5f)
                         event.changes.forEach { it.consume() }
@@ -67,7 +77,7 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                             zoom > 1f && at > 0 -> levels[at - 1]
                             else -> null
                         }
-                        val p = if (zoom < 1f) (1f - zoom) / 0.45f else (zoom - 1f) / 0.8f
+                        val p = kotlin.math.abs(kotlin.math.ln(zoom)) / kotlin.math.ln(1.7f)
                         scope.launch { morph.progress.snapTo(if (morph.target == null) 0f else p.coerceIn(0f, 1f)) }
                     }
                 } while (event.changes.any { it.pressed })

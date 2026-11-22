@@ -92,7 +92,8 @@ fun MediaGridPage(title: String, media: List<Media>, library: GalleryLibrary, na
     BackHandler(enabled = selection.active) { selection.clear() }
     fun menuItems(close: () -> Unit) = listOf(
         ElvanPopupMenuItem("Select", MaterialSymbols.Rounded.CheckCircle, { close(); selection.active = true }),
-        ElvanPopupMenuItem(if (oldestFirst) "Newest first" else "Oldest first", MaterialSymbols.Rounded.Sort, { close(); oldestFirst = !oldestFirst })
+        ElvanPopupMenuItem(if (oldestFirst) "Newest first" else "Oldest first", MaterialSymbols.Rounded.Sort, { close(); oldestFirst = !oldestFirst }),
+        ElvanPopupMenuItem("Start slideshow", Sym.Rounded.Slideshow, { close(); nav.open(Page.Slideshow(visibleMedia)) })
     )
     // An album opens on its cover; the usual header comes back only while selecting
     if (plain && !selection.active && visibleMedia.isNotEmpty()) {

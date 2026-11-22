@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -35,6 +36,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -133,8 +136,28 @@ fun DatedMediaGrid(
             else -> groupByDay(media)
         }
     }
-    val pinch = remember { PinchZoom() }
-    val morph = remember { GridMorph(squareSlots) }
+    val animScope = androidx.compose.runtime.rememberCoroutineScope()
+    val pinch = remember { PinchZoom(animScope) }
+    val mediaIndex = remember(media) { HashMap<String, Int>(media.size * 2).also { m -> media.forEachIndexed { i, it -> m[it.uri] = i } } }
+    val pictureSlots = remember(media) { picturesSlots(media) }
+    val morph = remember(plain, pictureSlots) { GridMorph(if (plain) squareSlots else pictureSlots, animScope) }
+    // Grid index of each picture at this level (rows count once), to bring the pinched picture back under the fingers
+    val indexOf = remember(media, columns, days, cover != null, header != null) {
+        val map = HashMap<String, Int>()
+        var i = 1 + (if (cover != null) 1 else 0) + (if (header != null) 1 else 0)
+        if (plain) media.forEach { map[it.uri] = i++ }
+        else if (squares) days.forEach { d -> i++; d.media.forEach { map[it.uri] = i++ } }
+        else days.forEach { d -> i++; justifiedRows(d.media, columns).forEach { row -> row.forEach { map[it.uri] = i }; i++ } }
+        map
+    }
+    var anchor by remember { androidx.compose.runtime.mutableStateOf<Pair<String, Int>?>(null) }
+    LaunchedEffect(columns) {
+        val (uri, top) = anchor ?: return@LaunchedEffect
+        anchor = null
+        val at = indexOf[uri] ?: return@LaunchedEffect
+        grid.scrollToItem(at)
+        grid.scrollBy(-top.toFloat())
+    }
     // For the fast-scroll bubble: each picture's (and each day row's) date, and where each year begins
     val dateOf = remember(media, days) {
         val map = HashMap<Any, Media>()
@@ -148,16 +171,24 @@ fun DatedMediaGrid(
             .map { (y, items) -> items.first().index.toFloat() / media.size to y }
     }
 
+    // The picture under the fingers, and how far down the screen it sits
+    fun underFingers(f: androidx.compose.ui.geometry.Offset): Pair<String, Int>? =
+        grid.layoutInfo.visibleItemsInfo.firstOrNull { f.y >= it.offset.y && f.y < it.offset.y + it.size.height && f.x >= it.offset.x && f.x < it.offset.x + it.size.width }
+            ?.let { item -> (item.key as? String)?.let { k -> dateOf[k]?.uri ?: k.takeIf { u -> u in indexOf } }?.let { uri -> uri to item.offset.y } }
+    if (!plain) morph.pickAnchor = { f -> underFingers(f)?.first?.let { mediaIndex[it] } }
+
     ElvanGrid(
         grid, columns = if (squares) columns else 1,
         dateLabel = { key -> dateOf[key]?.let { bubbleDate(it) } }, yearMarks = years, gap = if (squares) 1.dp else 0.5.dp, sidePadding = 0.dp,
         modifier = if (plain) Modifier.pinchMorph(morph, grid, columns, albumColumnLevels, 1 + (if (cover != null) 1 else 0) + (if (header != null) 1 else 0)) {
             columns = it
             prefs.edit().putInt(columnsKey, it).apply()
-        } else Modifier.pinchLevels(pinch, columns, columnLevels) {
+        } else Modifier.pinchMorph(morph, grid, columns, columnLevels, 1) {
+            // After the change, scroll so the pinched picture is where it was
+            anchor = underFingers(morph.focus)
             columns = it
             prefs.edit().putInt(columnsKey, it).apply()
-        }.pinchScaled(pinch)
+        }
     ) {
         if (cover != null) item(key = "page_cover", span = { GridItemSpan(maxLineSpan) }) { cover() }
         if (header != null) item(key = "page_header", span = { GridItemSpan(maxLineSpan) }) { CountLine(header) }
@@ -175,13 +206,16 @@ fun DatedMediaGrid(
         }
         if (squares) {
             days.forEach { group ->
-                item(key = group.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") { DayHeading(group, selection, colors) }
+                item(key = group.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") {
+                    Box(Modifier.graphicsLayer { alpha = if (morph.target != null) 1f - morph.progress.value else 1f }) { DayHeading(group, selection, colors) }
+                }
                 items(group.media.size, key = { group.media[it].uri }, contentType = { "media" }) { i ->
                     val m = group.media[i]
                     MediaThumb(
                         m, selection.active, m.uri in selection.selected, showDuration = columns < 9,
                         onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, order.indexOf(m.uri)) },
-                        onLongClick = { selection.toggle(m.uri) }
+                        onLongClick = { selection.toggle(m.uri) },
+                        modifier = Modifier.zIndex(1f).morphTile(morph, mediaIndex[m.uri] ?: 0, columns)
                     )
                 }
             }
@@ -189,7 +223,7 @@ fun DatedMediaGrid(
         }
         days.forEach { day ->
             item(key = day.key, span = { GridItemSpan(maxLineSpan) }, contentType = "day") {
-                DayHeading(day, selection, colors)
+                Box(Modifier.graphicsLayer { alpha = if (morph.target != null) 1f - morph.progress.value else 1f }) { DayHeading(day, selection, colors) }
             }
             val rows = justifiedRows(day.media, columns)
             rows.forEachIndexed { rowIndex, rowMedia ->
@@ -210,7 +244,8 @@ fun DatedMediaGrid(
                                     onClick = { if (selection.active) selection.toggle(m.uri) else onOpen(media, order.indexOf(m.uri)) },
                                     onLongClick = { selection.toggle(m.uri) },
                                     square = false,
-                                    modifier = if (short) Modifier.width(rowHeight * ratios[index]) else Modifier.weight(ratios[index])
+                                    modifier = (if (short) Modifier.width(rowHeight * ratios[index]) else Modifier.weight(ratios[index]))
+                                        .zIndex(1f).morphTile(morph, mediaIndex[m.uri] ?: 0, columns)
                                 )
                             }
                         }
@@ -273,6 +308,59 @@ private fun bubbleDate(m: Media): String {
     }
 }
 
+/**
+ * Where each picture sits at each Pictures level, measured from the top of the content: days in photo-shaped rows (3),
+ * days in squares (4), months (9) or years (20) in squares, each group under a 42 dp heading. Worked out once per level.
+ */
+private fun picturesSlots(media: List<Media>): GridSlots {
+    val cache = HashMap<Long, Array<androidx.compose.ui.geometry.Rect>>()
+    return GridSlots { index, columns, width, _ ->
+        val key = columns.toLong() shl 32 or width.toLong()
+        val all = cache.getOrPut(key) {
+            val out = Array(media.size) { androidx.compose.ui.geometry.Rect.Zero }
+            val at = HashMap<String, Int>(media.size * 2).also { m -> media.forEachIndexed { i, it -> m[it.uri] = i } }
+            val heading = 42.dp.toPx()
+            val groups = when (columns) { 20 -> groupByPattern(media, "yyyy"); 9 -> groupByPattern(media, "MMM yyyy"); else -> groupByDay(media) }
+            var y = 0f
+            if (columns >= 4) {
+                val g = 1.dp.toPx()
+                val w = (width - (columns - 1) * g) / columns
+                groups.forEach { grp ->
+                    y += heading + g
+                    grp.media.forEachIndexed { k, m ->
+                        val x = (k % columns) * (w + g)
+                        val top = y + (k / columns) * (w + g)
+                        at[m.uri]?.let { out[it] = androidx.compose.ui.geometry.Rect(x, top, x + w, top + w) }
+                    }
+                    y += ((grp.media.size + columns - 1) / columns) * (w + g)
+                }
+            } else {
+                val g = 0.5.dp.toPx()
+                groups.forEach { grp ->
+                    y += heading + g
+                    val rows = justifiedRows(grp.media, columns)
+                    rows.forEachIndexed { r, row ->
+                        val ratios = row.map { it.displayRatio() }
+                        val usual = columns * 0.72f
+                        val short = r == rows.lastIndex && row.size < columns && ratios.sum() < usual * 0.8f
+                        val h = width / (if (short) usual else ratios.sum().coerceAtLeast(0.5f))
+                        val free = width - (row.size - 1) * g
+                        var x = 0f
+                        row.forEachIndexed { k, m ->
+                            val w = if (short) h * ratios[k] else free * ratios[k] / ratios.sum()
+                            at[m.uri]?.let { out[it] = androidx.compose.ui.geometry.Rect(x, y, x + w, y + h) }
+                            x += w + g
+                        }
+                        y += h + g
+                    }
+                }
+            }
+            out
+        }
+        all.getOrElse(index) { androidx.compose.ui.geometry.Rect.Zero }.let { if (it.width <= 0f) androidx.compose.ui.geometry.Rect(0f, 0f, 1f, 1f) else it }
+    }
+}
+
 private val squareSlots = GridSlots { index, columns, width, _ ->
     val gap = 1.dp.toPx()
     val w = (width - (columns - 1) * gap) / columns
@@ -282,9 +370,11 @@ private val squareSlots = GridSlots { index, columns, width, _ ->
 }
 
 /** How far the fingers have pinched, and where: the grid is drawn scaled by this so it follows them. */
-class PinchZoom {
+class PinchZoom(val scope: kotlinx.coroutines.CoroutineScope) {
     val scale = androidx.compose.animation.core.Animatable(1f)
     var origin by androidx.compose.runtime.mutableStateOf(androidx.compose.ui.graphics.TransformOrigin.Center)
+    /** Where the fingers are, in the grid's pixels. */
+    var focus = androidx.compose.ui.geometry.Offset.Zero
 }
 
 fun Modifier.pinchScaled(pinch: PinchZoom): Modifier = graphicsLayer {
@@ -298,8 +388,8 @@ fun Modifier.pinchScaled(pinch: PinchZoom): Modifier = graphicsLayer {
  */
 fun Modifier.pinchLevels(pinch: PinchZoom, columns: Int, levels: List<Int>, onChange: (Int) -> Unit): Modifier = pointerInput(columns, levels) {
     val settle = androidx.compose.animation.core.spring<Float>(dampingRatio = 0.9f, stiffness = 380f)
-    coroutineScope {
-        val scope = this
+    run {
+        val scope = pinch.scope
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             var zoom = 1f
@@ -310,7 +400,10 @@ fun Modifier.pinchLevels(pinch: PinchZoom, columns: Int, levels: List<Int>, onCh
                     pinched = true
                     zoom = (zoom * event.calculateZoom()).coerceIn(0.5f, 2f)
                     val c = event.calculateCentroid(useCurrent = true)
-                    if (c.isSpecified && size.width > 0) pinch.origin = androidx.compose.ui.graphics.TransformOrigin(c.x / size.width, c.y / size.height)
+                    if (c.isSpecified && size.width > 0) {
+                        pinch.origin = androidx.compose.ui.graphics.TransformOrigin(c.x / size.width, c.y / size.height)
+                        pinch.focus = c
+                    }
                     event.changes.forEach { it.consume() }
                     val z = zoom
                     scope.launch { pinch.scale.snapTo(z.coerceIn(0.7f, 1.4f)) }

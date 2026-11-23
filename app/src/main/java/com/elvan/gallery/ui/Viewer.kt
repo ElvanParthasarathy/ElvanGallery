@@ -26,6 +26,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -139,16 +141,25 @@ fun ZoomViewer(
     val info = remember { Animatable(0f) }
     var lastDy by remember { mutableFloatStateOf(0f) }
     val heroSpring = spring<Float>(dampingRatio = 0.88f, stiffness = 420f)
-    // The photo grows from its tile in about 200ms, easing out
-    val openTween = tween<Float>(200, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))
-    val closeTween = tween<Float>(220, easing = CubicBezierEasing(0.3f, 0f, 0.1f, 1f))
+    // Samsung Gallery (measured on a Galaxy A53): the photo grows from its tile in ~300 ms and shrinks back in ~300 ms
+    val openTween = tween<Float>(300, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))
+    val closeTween = tween<Float>(300, easing = CubicBezierEasing(0.3f, 0f, 0.1f, 1f))
     var opened by remember { mutableStateOf(false) }
+    // Pinching the photo smaller (Samsung): it follows the fingers, shrinking and turning, the page shows through;
+    // let go small enough and it flies back into its tile, untwisting as it lands
+    val pinchS = remember { Animatable(1f) }
+    val pinchR = remember { Animatable(0f) }
+    val pinchPan = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+    val pageShow = remember { Animatable(1f) }
     LaunchedEffect(Unit) { open.animateTo(1f, openTween); opened = true }
     LaunchedEffect(closing) {
         if (closing) {
             coroutineScope {
                 launch { info.animateTo(0f, heroSpring) }
                 launch { dragY.animateTo(0f, closeTween) }
+                launch { pinchS.animateTo(1f, closeTween) }
+                launch { pinchR.animateTo(0f, closeTween) }
+                launch { pinchPan.animateTo(Offset.Zero, tween(300, easing = CubicBezierEasing(0.3f, 0f, 0.1f, 1f))) }
                 open.animateTo(0f, closeTween)
             }
             onClosed()
@@ -166,7 +177,7 @@ fun ZoomViewer(
         val hero = models.getOrNull(pager.currentPage)?.let { heroKey(pager.currentPage) }?.let { HeroBounds.rect(it) }
             ?.takeIf { it.width > 0f && it.overlaps(screen) }
         // Opening: black at once; closing and pulling down: the page behind fades in
-        val shown = (if (!opened && !closing) 1f else open.value) * (1f - (dragY.value / (h * 0.6f))).coerceIn(0f, 1f)
+        val shown = (if (!opened && !closing) 1f else open.value) * (1f - (dragY.value / (h * 0.6f))).coerceIn(0f, 1f) * pageShow.value
 
         Box(
             Modifier.fillMaxSize().background(Color.Black.copy(alpha = shown))
@@ -203,12 +214,13 @@ fun ZoomViewer(
                     val p = open.value
                     val startScale = hero?.let { it.width / w } ?: 0.85f
                     val pull = 1f - (dragY.value / h) * 0.6f
-                    val s = (startScale + (1f - startScale) * p) * pull
+                    val s = (startScale + (1f - startScale) * p) * pull * pinchS.value
                     scaleX = s; scaleY = s
+                    rotationZ = pinchR.value
                     val cx = hero?.center?.x ?: (w / 2)
                     val cy = hero?.center?.y ?: (h / 2)
-                    translationX = (cx - w / 2) * (1f - p)
-                    translationY = (cy - h / 2) * (1f - p) + dragY.value - info.value * infoH * 0.55f
+                    translationX = (cx - w / 2) * (1f - p) + pinchPan.value.x
+                    translationY = (cy - h / 2) * (1f - p) + dragY.value - info.value * infoH * 0.55f + pinchPan.value.y
                     alpha = if (hero == null) p else 1f
                 },
                 key = { it }
@@ -216,11 +228,32 @@ fun ZoomViewer(
                 if (isVideo(page)) VideoPage(models[page].toString(), isCurrent = pager.currentPage == page && opened, chrome = chrome && opened && !closing) { chrome = !chrome }
                 else ZoomableImage(models[page], onTap = {
                     if (info.value > 0f) scope.launch { info.animateTo(0f, heroSpring) } else chrome = !chrome
-                }, onZoomChange = { zoomed[page] = it })
+                }, onZoomChange = { zoomed[page] = it },
+                    onPinchOut = { z, r, pan ->
+                        if (!closing) scope.launch {
+                            val ns = (pinchS.value * z).coerceIn(0.2f, 1f)
+                            pinchS.snapTo(ns)
+                            pinchR.snapTo(pinchR.value + r)
+                            pinchPan.snapTo(pinchPan.value + pan)
+                            // The page behind is fully there by the time the photo is ~70% of its size
+                            pageShow.snapTo(((ns - 0.7f) / 0.28f).coerceIn(0f, 1f))
+                        }
+                    },
+                    onPinchOutEnd = {
+                        if (!closing) {
+                            if (pinchS.value < 0.88f) onBack()
+                            else scope.launch {
+                                launch { pinchR.animateTo(0f, heroSpring) }
+                                launch { pinchPan.animateTo(Offset.Zero, spring(dampingRatio = 0.88f, stiffness = 420f)) }
+                                launch { pageShow.animateTo(1f, heroSpring) }
+                                pinchS.animateTo(1f, heroSpring)
+                            }
+                        }
+                    })
             }
 
             // The bars appear once the photo has landed and go at once on close
-            val chromeAlpha = if (chrome && dragY.value == 0f && opened && !closing) 1f else 0f
+            val chromeAlpha = if (chrome && dragY.value == 0f && pinchS.value >= 0.999f && opened && !closing) 1f else 0f
             Row(
                 Modifier.align(Alignment.TopStart).graphicsLayer { alpha = chromeAlpha * (1f - info.value) }.fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.statusBars).padding(horizontal = 16.dp, vertical = 8.dp),
@@ -265,7 +298,11 @@ fun ZoomViewer(
 }
 
 @Composable
-private fun ZoomableImage(model: Any, onTap: () -> Unit, onZoomChange: (Boolean) -> Unit) {
+private fun ZoomableImage(
+    model: Any, onTap: () -> Unit, onZoomChange: (Boolean) -> Unit,
+    onPinchOut: (zoom: Float, rotation: Float, pan: Offset) -> Unit = { _, _, _ -> },
+    onPinchOutEnd: () -> Unit = {}
+) {
     val scale = remember { Animatable(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     val scope = rememberCoroutineScope()
@@ -297,17 +334,24 @@ private fun ZoomableImage(model: Any, onTap: () -> Unit, onZoomChange: (Boolean)
                 // Two fingers zoom; once zoomed one finger pans. A single finger at 1x is left to the pager.
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    var out = false
                     do {
                         val event = awaitPointerEvent()
                         val fingers = event.changes.count { it.pressed }
-                        if (fingers > 1 || scale.value > 1f) {
+                        // At full size, two fingers closing take the photo out (pinch to close), turning with them
+                        if (fingers > 1 && (out || (scale.value <= 1.001f && event.calculateZoom() < 1f))) {
+                            out = true
+                            onPinchOut(event.calculateZoom(), event.calculateRotation(), event.calculatePan())
+                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        } else if (fingers > 1 || scale.value > 1f) {
                             val s = (scale.value * event.calculateZoom()).coerceIn(1f, 5f)
                             scope.launch { scale.snapTo(s) }
                             offset = clamp(offset + event.calculatePan(), s)
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
-                    if (scale.value <= 1.05f) scope.launch { scale.animateTo(1f); offset = Offset.Zero }
+                    if (out) onPinchOutEnd()
+                    else if (scale.value <= 1.05f) scope.launch { scale.animateTo(1f); offset = Offset.Zero }
                 }
             }
             .graphicsLayer { scaleX = scale.value; scaleY = scale.value; translationX = offset.x; translationY = offset.y }

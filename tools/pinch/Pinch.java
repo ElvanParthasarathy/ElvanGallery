@@ -7,17 +7,19 @@ import java.lang.reflect.Method;
 /**
  * A real two-finger pinch from the shell, for recording pinch behaviour on a phone (adb input sends one finger).
  * Build: tools/pinch/build.sh. Run:
- *   adb shell CLASSPATH=/data/local/tmp/pinch.dex app_process / Pinch cx cy fromSpan toSpan ms holdMs
- * toSpan < fromSpan pinches in. The shell user may inject input; nothing here is part of the app.
+ *   adb shell CLASSPATH=/data/local/tmp/pinch.dex app_process / Pinch cx cy fromSpan toSpan ms holdMs [turnDegrees]
+ * toSpan < fromSpan pinches in; turnDegrees turns the two fingers about the centre as they move. The shell user may inject input; nothing here is part of the app.
  */
 public class Pinch {
     private static Object im;
     private static Method inject;
+    private static double turn, at;
 
     public static void main(String[] a) throws Exception {
         float cx = Float.parseFloat(a[0]), cy = Float.parseFloat(a[1]);
         float from = Float.parseFloat(a[2]), to = Float.parseFloat(a[3]);
         long ms = Long.parseLong(a[4]), hold = a.length > 5 ? Long.parseLong(a[5]) : 0;
+        turn = a.length > 6 ? Math.toRadians(Double.parseDouble(a[6])) : 0;
         Class<?> c = Class.forName("android.hardware.input.InputManagerGlobal");
         im = c.getMethod("getInstance").invoke(null);
         inject = c.getMethod("injectInputEvent", InputEvent.class, int.class);
@@ -27,6 +29,7 @@ public class Pinch {
         long steps = Math.max(2, ms / 16);
         for (long i = 1; i <= steps; i++) {
             SystemClock.sleep(16);
+            at = turn * i / steps;
             send(down, MotionEvent.ACTION_MOVE, cx, cy, from + (to - from) * i / steps, 2);
         }
         if (hold > 0) SystemClock.sleep(hold);
@@ -42,8 +45,9 @@ public class Pinch {
             props[i].id = i;
             props[i].toolType = MotionEvent.TOOL_TYPE_FINGER;
             coords[i] = new MotionEvent.PointerCoords();
-            coords[i].x = cx;
-            coords[i].y = cy + (i == 0 ? -span / 2 : span / 2);
+            double r = (i == 0 ? -span / 2 : span / 2);
+            coords[i].x = (float) (cx - r * Math.sin(at));
+            coords[i].y = (float) (cy + r * Math.cos(at));
             coords[i].pressure = 1f;
             coords[i].size = 1f;
         }

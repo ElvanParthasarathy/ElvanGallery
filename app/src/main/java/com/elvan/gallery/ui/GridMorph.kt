@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.Density
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.NonCancellable
 
@@ -68,6 +69,9 @@ class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineSco
     val sThen = HashMap<Int, Float>()
     /** Counts pinches: only the latest one may tidy up after itself. */
     var gen = 0
+    /** Fingers on the grid now, and whether a pinch's ending is still playing: with neither, a pinch must be at rest. */
+    var fingers by mutableIntStateOf(0)
+    var finishing by mutableStateOf(false)
     /** Names on tiles fade back in once a new level has landed. */
     val labels = Animatable(1f)
     /**
@@ -78,6 +82,7 @@ class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineSco
     suspend fun tidy() {
         target = null
         settling = false
+        finishing = false
         progress.snapTo(0f)
         labels.snapTo(1f)
     }
@@ -86,7 +91,14 @@ class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineSco
 }
 
 fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, levels: List<Int>, firstTile: Int, onChange: (Int) -> Unit): Modifier =
-    onSizeChanged { morph.width = it.width.toFloat() }.pointerInput(columns, levels, firstTile) {
+    onSizeChanged { morph.width = it.width.toFloat() }
+    // Counts the fingers down (never restarted, never consumes), for the watch in [QuietWhilePinching]
+    .pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) morph.fingers = awaitPointerEvent(PointerEventPass.Initial).changes.count { it.pressed }
+        }
+    }
+    .pointerInput(columns, levels, firstTile) {
         val finish = spring<Float>(dampingRatio = 0.95f, stiffness = 520f)
         run {
             val scope = morph.scope
@@ -135,6 +147,7 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                 if (!pinched) return@awaitEachGesture
                 val next = morph.target
                 val g = morph.gen
+                morph.finishing = true
                 scope.launch {
                   // Whatever cuts this short (another pinch's frame, the page going), the grid is left at rest
                   try {
@@ -158,7 +171,10 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                         morph.target = null
                     }
                   } finally {
-                    if (morph.gen == g && morph.target != null) withContext(NonCancellable) { morph.tidy() }
+                    if (morph.gen == g) {
+                        if (morph.target != null) withContext(NonCancellable) { morph.tidy() }
+                        morph.finishing = false
+                    }
                   }
                 }
             }
@@ -220,6 +236,13 @@ fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int, corner: andro
  */
 @androidx.compose.runtime.Composable
 fun QuietWhilePinching(morph: GridMorph, content: @androidx.compose.runtime.Composable () -> Unit) {
+    // The last guard: a pinch left part way with no finger down and no ending playing (however it happened) is put
+    // back at rest, so the grid can never stay frozen between two levels
+    androidx.compose.runtime.LaunchedEffect(morph) {
+        androidx.compose.runtime.snapshotFlow { morph.target != null && morph.fingers == 0 && !morph.finishing }.collectLatest { stuck ->
+            if (stuck) { delay(400); morph.tidy() }
+        }
+    }
     androidx.compose.foundation.layout.Box(
         if (morph.target != null) Modifier.clearAndSetSemantics { } else Modifier
     ) { content() }

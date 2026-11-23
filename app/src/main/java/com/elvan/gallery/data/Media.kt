@@ -33,7 +33,8 @@ object MediaQuery {
             DURATION,
             MediaStore.MediaColumns.WIDTH,
             MediaStore.MediaColumns.HEIGHT,
-            TAKEN
+            TAKEN,
+            MediaStore.MediaColumns.ORIENTATION
         )
         val kinds = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE}, ${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO})"
         val out = ArrayList<Media>()
@@ -53,8 +54,13 @@ object MediaQuery {
             val width = c.getColumnIndex(MediaStore.MediaColumns.WIDTH)
             val height = c.getColumnIndex(MediaStore.MediaColumns.HEIGHT)
             val taken = c.getColumnIndex(TAKEN)
+            val orientation = c.getColumnIndex(MediaStore.MediaColumns.ORIENTATION)
             while (c.moveToNext()) {
                 val video = c.getInt(type) == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
+                // Width and height are stored before the camera's rotation: a photo turned 90 or 270 degrees is the other way round
+                val turned = orientation >= 0 && c.getInt(orientation).let { it == 90 || it == 270 }
+                val w = if (width >= 0) c.getInt(width) else 0
+                val h = if (height >= 0) c.getInt(height) else 0
                 val base = if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
                 out += Media(
                     uri = ContentUris.withAppendedId(base, c.getLong(id)).toString(),
@@ -63,8 +69,8 @@ object MediaQuery {
                     album = c.getString(bucket) ?: "Other",
                     dateAdded = if (taken >= 0 && c.getLong(taken) > 0) c.getLong(taken) / 1000 else c.getLong(added),
                     duration = if (video && length >= 0) c.getLong(length) else null,
-                    width = if (width >= 0) c.getInt(width) else 0,
-                    height = if (height >= 0) c.getInt(height) else 0
+                    width = if (turned) h else w,
+                    height = if (turned) w else h
                 )
             }
         }

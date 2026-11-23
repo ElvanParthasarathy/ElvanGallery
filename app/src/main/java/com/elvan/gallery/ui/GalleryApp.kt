@@ -10,6 +10,8 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.Icon
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.tween
@@ -99,10 +101,14 @@ fun GalleryApp(library: GalleryLibrary) {
                     val visible = remember { MutableTransitionState(false) }
                     visible.targetState = !entry.closing
                     if (entry.closing && visible.isIdle && !visible.currentState) LaunchedEffect(Unit) { nav.remove(entry) }
+                    // An album (or any page of photos) opens as its own solid screen at once, as Samsung's do: the tabs
+                    // never show through it
+                    val albumLike = entry.page is Page.Album || entry.page is Page.Group || entry.page is Page.AllAlbums ||
+                        entry.page is Page.Shortcut || entry.page is Page.Story
                     AnimatedVisibility(
                         visibleState = visible,
-                        enter = slideInHorizontally(tween(380, easing = PageEasing)) { it / 3 } + fadeIn(tween(260)),
-                        exit = slideOutHorizontally(tween(320, easing = PageEasing)) { it / 3 } + fadeOut(tween(240))
+                        enter = if (albumLike) EnterTransition.None else slideInHorizontally(tween(380, easing = PageEasing)) { it / 3 } + fadeIn(tween(260)),
+                        exit = if (albumLike) ExitTransition.None else slideOutHorizontally(tween(320, easing = PageEasing)) { it / 3 } + fadeOut(tween(240))
                     ) { PageHost(entry, library, nav) }
                 }
             }

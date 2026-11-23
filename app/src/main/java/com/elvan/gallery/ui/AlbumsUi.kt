@@ -264,10 +264,8 @@ private fun GroupCover(group: AlbumGroup, colors: ShellColors) {
 
 @Composable
 fun Thumb(uri: String?, modifier: Modifier) {
-    AsyncImage(
-        model = ImageRequest.Builder(LocalContext.current).data(thumbModel(uri)).size(360).apply { if (uri != null) placeholderMemoryCacheKey(thumbPlaceholder(uri)) }.build(),
-        contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier
-    )
+    // The grid's own drawing: the same copy in memory as the Pictures tab shows at once, a missing one fades in
+    Box(if (uri != null) modifier.thumbnail(uri, 360) else modifier)
 }
 
 /** The album being carried to a new place, where the finger is, and where on the tile it was taken. */

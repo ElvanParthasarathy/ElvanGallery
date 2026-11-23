@@ -85,7 +85,7 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                             morph.anchor = morph.begin?.invoke(morph.focus) ?: (grid.firstVisibleItemIndex - firstTile).coerceAtLeast(0)
                         }
                         pinched = true
-                        zoom = (zoom * event.calculateZoom()).coerceIn(0.4f, 2.5f)
+                        zoom = (zoom * event.calculateZoom()).coerceIn(0.35f, 2.5f)
                         event.changes.forEach { it.consume() }
                         val at = levels.indexOf(columns)
                         val next = when {
@@ -97,7 +97,7 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                         val plan = morph.scrollFor
                         if (next != null && plan != null && next !in morph.sThen) morph.sThen[next] = plan(next)
                         morph.target = next
-                        val p = kotlin.math.abs(kotlin.math.ln(zoom)) / kotlin.math.ln(1.7f)
+                        val p = kotlin.math.abs(kotlin.math.ln(zoom)) / kotlin.math.ln(if (zoom < 1f) 2.6f else 1.7f)
                         scope.launch { morph.progress.snapTo(if (morph.target == null) 0f else p.coerceIn(0f, 1f)) }
                     }
                     else if (pinched) event.changes.forEach { it.consume() }

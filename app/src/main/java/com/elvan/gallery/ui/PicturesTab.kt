@@ -347,7 +347,7 @@ fun DatedMediaGrid(
                 prefs.edit().putInt(columnsKey, next).apply()
             },
     ) { levelContent(columns, live = true) } }
-    PinchCanvas(morph, columns, { plan(it, morph.width) }, media, colors.surface, colors.background, colors.textPrimary, plain, levels.last())
+    PinchCanvas(morph, columns, { plan(it, morph.width) }, media, colors.surface, colors.background, colors.textPrimary, plain)
     }
 }
 
@@ -360,7 +360,7 @@ fun DatedMediaGrid(
 @Composable
 private fun PinchCanvas(
     morph: GridMorph, columns: Int, plan: (Int) -> GridPlan, media: List<Media>,
-    surface: Color, background: Color, textColor: Color, plain: Boolean, lastLevel: Int
+    surface: Color, background: Color, textColor: Color, plain: Boolean
 ) {
     val target = morph.target
     val sThen = target?.let { morph.sThen[it] }
@@ -414,114 +414,47 @@ private fun PinchCanvas(
         val from = minOf(now.firstVisible(sNow), then.firstVisible(sThen))
         val to = maxOf(lastVisible(now, sNow), lastVisible(then, sThen))
         val zoomOut = target > columns
-        // Zooming out between square grids, as Samsung Gallery does (measured frame by frame on a Galaxy A53):
-        // one continuous grid in date order whose tiles shrink smoothly; as they shrink a column is added and the
-        // photos that change row cross-fade between their two places; the first row (at the top) or the photo
-        // under the fingers stays put; the day headings fade out early; the next level settles in at the very end.
-        val flow = zoomOut && (plain || columns >= 4)
-        val q = if (flow) ((p - 0.8f) / 0.2f).coerceIn(0f, 1f).let { it * it * (3f - 2f * it) } else 0f
-        if (flow) {
-            val n = media.size
-            val anchor = morph.anchor.coerceIn(0, n - 1)
-            val g = with(density) { 1.dp.toPx() }
-            val w = size.width
-            val s0 = now.rect[anchor].width
-            val s1 = then.rect[anchor].width
-            val cell = s0 + (s1 - s0) * p
-            val kf = (w + g) / (cell + g)
-            val k0 = kotlin.math.floor(kf).toInt().coerceAtLeast(1)
-            val f = (kf - k0).coerceIn(0f, 1f)
-            val i0 = now.firstVisible(sNow).coerceAtMost(anchor)
-            val atTop = sNow < 1f
-            val firstTop = now.rect[i0].top - sNow
-            // Columns are counted from the start of the anchor's group at the next level (its month), as that level
-            // lays them out, so the shrinking grid becomes the next level instead of every photo crossing sideways
-            val base = run {
-                var j = anchor
-                while (j > 0 && j > anchor - 5000) {
-                    val prev = then.rect[j - 1]; val cur = then.rect[j]
-                    if (cur.top - prev.bottom > g * 4f) break // a heading sits between them
-                    j--
-                }
-                j
-            }
-            fun rowOf(i: Int, k: Int) = Math.floorDiv(i - base, k)
-            // Where the row holding the anchor sits: the first row stays at the top, otherwise the finger point stays
-            // (mid-page it travels steadily from where the photo is to where the next level will really put it, which
-            // is under the fingers unless that level cannot scroll that far)
-            val anchorFrom = now.rect[anchor].top - sNow
-            val anchorTo = then.rect[anchor].top - sThen
-            fun anchorRowTop(k: Int) = if (atTop) firstTop + (rowOf(anchor, k) - rowOf(i0, k)) * (cell + g) else anchorFrom + (anchorTo - anchorFrom) * p
-            // The old layout (day breaks and all) shrinking about the top-left at the top, or the fingers otherwise
-            val sc = cell / s0
-            val ox = if (atTop) 0f else morph.focus.x
-            val oy = if (atTop) firstTop else morph.focus.y
-            // Over the first third the old layout cross-fades into the one flowing grid (as the headings fade)
-            val m = (p * 3f).coerceAtMost(1f)
-            fun draw(i: Int, x: Float, y: Float, ww: Float, hh: Float, alpha: Float) {
-                if (alpha <= 0.01f || y > h || y + hh < 0f || x > w || ww < 1f) return
-                val img = cached(media[i].uri) ?: return
-                val dw = ww.toInt().coerceAtLeast(1)
-                val dh = hh.toInt().coerceAtLeast(1)
-                val scale = maxOf(dw / img.width.toFloat(), dh / img.height.toFloat())
-                val sw = (dw / scale).toInt().coerceIn(1, img.width)
-                val sh = (dh / scale).toInt().coerceIn(1, img.height)
-                drawImage(img, androidx.compose.ui.unit.IntOffset((img.width - sw) / 2, (img.height - sh) / 2), androidx.compose.ui.unit.IntSize(sw, sh),
-                    androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()), androidx.compose.ui.unit.IntSize(dw, dh), alpha = alpha)
-            }
-            fun paint(i: Int, k: Int, alpha: Float) {
+        // Zooming out, as Samsung Gallery does (a slow injected pinch recorded frame by frame on a Galaxy A53): the two
+        // levels are two whole pictures zoomed about the same point and cross-faded, following the fingers the whole
+        // way. This level shrinks toward the next level's size and fades out; the next level starts at this level's
+        // size and shrinks into place as it fades in. Nothing moves tile by tile, so nothing crowds or crosses.
+        // The point is the photo under the fingers, or the top-left of the first row at the top of the page.
+        var oldScale = 1f
+        var newScale = 1f
+        val px = if (sNow < 1f) 0f else morph.focus.x
+        val py = if (sNow < 1f) (now.rect.getOrNull(now.firstVisible(0f))?.top ?: 0f) else morph.focus.y
+        if (zoomOut) {
+            val a0 = now.rect[morph.anchor.coerceIn(0, media.size - 1)]
+            val a1 = then.rect[morph.anchor.coerceIn(0, media.size - 1)]
+            val r = if (a0.width > 0f) a1.width / a0.width else 0.5f
+            oldScale = 1f + (r - 1f) * p
+            newScale = oldScale / r
+            fun layer(pl: GridPlan, scroll: Float, sc: Float, alpha: Float) {
                 if (alpha <= 0.01f) return
-                val row = rowOf(i, k)
-                val col = (i - base) - row * k
-                var x = col * (cell + g)
-                var y = anchorRowTop(k) + (row - rowOf(anchor, k)) * (cell + g)
-                var ww = cell
-                var hh = cell
-                if (m < 1f) {
-                    val r = now.rect[i]
-                    val oxr = (r.left - ox) * sc + ox
-                    val oyr = (r.top - sNow - oy) * sc + oy
-                    if (kotlin.math.abs(oxr - x) < 2f && kotlin.math.abs(oyr - y) < 2f) { draw(i, x, y, ww, hh, alpha); return }
-                    draw(i, oxr, oyr, r.width * sc, r.height * sc, alpha * (1f - m))
-                    draw(i, x, y, ww, hh, alpha * m)
-                    return
-                }
-                if (q > 0f) {
-                    // Settling: from the flowing grid into the next level's own places (headings, month breaks)
-                    val r = then.rect[i]
-                    x += (r.left - x) * q; y += (r.top - sThen - y) * q
-                    ww += (r.width - ww) * q; hh += (r.height - hh) * q
-                }
-                draw(i, x, y, ww, hh, alpha)
-            }
-            // Into the densest level the crowd of small moving tiles fades away while that level fades in underneath
-            val toLast = target == lastLevel
-            val c = if (toLast) ((p - 0.2f) / 0.6f).coerceIn(0f, 1f).let { it * it * (3f - 2f * it) } else 0f
-            if (toLast && c > 0f) {
-                var j = then.firstVisible(sThen)
-                while (j < n && then.rect[j].top <= sThen + h) { val r = then.rect[j]; draw(j, r.left, r.top - sThen, r.width, r.height, c); j++ }
-            }
-            // Photos on screen: rows above and below the anchor's row, at the larger column count
-            val k1 = k0 + 1
-            val rowsUp = kotlin.math.ceil(anchorRowTop(k0) / (cell + g)).toInt() + 2
-            val rowsDown = kotlin.math.ceil((h - anchorRowTop(k0)) / (cell + g)).toInt() + 2
-            val start = (anchor - (rowsUp + 1) * k1).coerceAtLeast(0)
-            val end = (anchor + (rowsDown + 1) * k1).coerceAtMost(n - 1)
-            for (i in start..end) {
-                val same = rowOf(i, k0) - rowOf(anchor, k0) == rowOf(i, k1) - rowOf(anchor, k1) &&
-                    (i - base) - rowOf(i, k0) * k0 == (i - base) - rowOf(i, k1) * k1
-                val keep = 1f - c
-                if (same || q > 0.5f) paint(i, k0, keep)
-                else { paint(i, k0, (1f - f) * keep); paint(i, k1, f * keep) }
-            }
-            // Settling: the next level's photos the flowing grid did not reach fade in at their own places
-            if (q > 0f && !toLast) {
-                var j = then.firstVisible(sThen)
-                while (j < n && then.rect[j].top <= sThen + h) {
-                    if (j !in start..end) { val r = then.rect[j]; draw(j, r.left, r.top - sThen, r.width, r.height, q) }
-                    j++
+                // The content rows that land on screen once zoomed about (px, py)
+                val top = scroll + py - py / sc
+                val bottom = top + h / sc
+                var i = pl.firstVisible(top)
+                while (i < media.size && pl.rect[i].top <= bottom) {
+                    val rr = pl.rect[i]
+                    val x = (rr.left - px) * sc + px
+                    val y = (rr.top - scroll - py) * sc + py
+                    val ww = rr.width * sc
+                    val hh = rr.height * sc
+                    i++
+                    if (x > size.width || x + ww < 0f || ww < 1f) continue
+                    val img = cached(media[i - 1].uri) ?: continue
+                    val dw = ww.toInt().coerceAtLeast(1)
+                    val dh = hh.toInt().coerceAtLeast(1)
+                    val scale = maxOf(dw / img.width.toFloat(), dh / img.height.toFloat())
+                    val sw = (dw / scale).toInt().coerceIn(1, img.width)
+                    val sh = (dh / scale).toInt().coerceIn(1, img.height)
+                    drawImage(img, androidx.compose.ui.unit.IntOffset((img.width - sw) / 2, (img.height - sh) / 2), androidx.compose.ui.unit.IntSize(sw, sh),
+                        androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()), androidx.compose.ui.unit.IntSize(dw, dh), alpha = alpha)
                 }
             }
+            layer(then, sThen, newScale, p)
+            layer(now, sNow, oldScale, 1f - p)
         } else for (pass in if (zoomOut) 0..1 else 1..1) for (i in from until to) {
             val a = now.rect[i]
             val b = then.rect[i]
@@ -548,17 +481,19 @@ private fun PinchCanvas(
             drawImage(img, androidx.compose.ui.unit.IntOffset((img.width - sw) / 2, (img.height - sh) / 2), androidx.compose.ui.unit.IntSize(sw, sh),
                 androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()), androidx.compose.ui.unit.IntSize(dw, dh), alpha = fade)
         }
-        // Date headings cross-fade at the two layouts' real positions; the page itself never scales or jumps.
-        val oldAlpha = if (flow) (1f - p * 3f).coerceAtLeast(0f) else 1f - p
-        val newAlpha = if (flow && target == lastLevel) ((p - 0.2f) / 0.6f).coerceIn(0f, 1f) else if (flow) q else p
-        if (!plain) for ((pl, s, alpha) in listOf(Triple(now, sNow, oldAlpha), Triple(then, sThen, newAlpha))) {
+        // Date headings cross-fade with their level (zoomed with it when zooming out)
+        if (!plain) for ((pl, sc0, alpha) in listOf(Triple(now, oldScale, 1f - p), Triple(then, newScale, p))) {
             if (alpha <= 0.01f) continue
+            val scroll = if (pl === now) sNow else sThen
             for (k in pl.headTop.indices) {
-                val y = pl.headTop[k] - s
+                val y = (pl.headTop[k] - scroll - py) * sc0 + py
                 if (y > h || y < -padY * 3) continue
                 val label = pl.headLabel[k]
                 val layout = labels.getOrPut(label) { measurer.measure(label, style) }
-                drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(padX, y + padY), alpha = alpha)
+                val x = (padX - px) * sc0 + px
+                scale(sc0, sc0, androidx.compose.ui.geometry.Offset(x, y + padY * sc0)) {
+                    drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(x, y + padY * sc0), alpha = alpha)
+                }
             }
         }
         }

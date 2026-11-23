@@ -163,13 +163,21 @@ fun ZoomViewer(
     val pinchR = remember { Animatable(0f) }
     val pinchPan = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     val pageShow = remember { Animatable(1f) }
+    // Pulling down (Samsung, measured on a Galaxy A53): the photo and its top bar become a card at 0.92 the moment the
+    // pull starts, over a black backdrop, and follow the finger 1:1 without shrinking further; let go past the mark and
+    // the grid shows at once while the card flies into its tile in ~230 ms; short of it, it springs back in ~150 ms
+    val pullScale = remember { Animatable(1f) }
+    var pullClose by remember { mutableStateOf(false) }
+    val pullBack = spring<Float>(dampingRatio = 1f, stiffness = 900f)
     LaunchedEffect(Unit) { open.animateTo(1f, openTween); opened = true }
     LaunchedEffect(pager) { androidx.compose.runtime.snapshotFlow { pager.settledPage }.collect { ViewerFollow.key = heroKey(it) } }
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { ViewerFollow.key = null } }
     LaunchedEffect(closing) {
         if (closing) {
+            val closeTween = if (pullClose) tween<Float>(230, easing = CubicBezierEasing(0.3f, 0f, 0.1f, 1f)) else closeTween
             coroutineScope {
                 launch { info.animateTo(0f, heroSpring) }
+                launch { pullScale.animateTo(1f, closeTween) }
                 launch { dragY.animateTo(0f, closeTween) }
                 launch { pinchS.animateTo(1f, closeTween) }
                 launch { pinchR.animateTo(0f, closeTween) }
@@ -191,7 +199,8 @@ fun ZoomViewer(
         val hero = models.getOrNull(pager.currentPage)?.let { heroKey(pager.currentPage) }?.let { HeroBounds.rect(it) }
             ?.takeIf { it.width > 0f && it.overlaps(screen) }
         // Opening: black at once; closing and pulling down: the page behind fades in
-        val shown = (if (!opened && !closing) 1f else open.value) * (1f - (dragY.value / (h * 0.6f))).coerceIn(0f, 1f) * pageShow.value
+        // A pull keeps the backdrop black; letting it go to close shows the page behind at once
+        val shown = if (pullClose) 0f else (if (!opened && !closing) 1f else open.value) * pageShow.value
 
         Box(
             Modifier.fillMaxSize().background(Color.Black.copy(alpha = shown))
@@ -200,14 +209,14 @@ fun ZoomViewer(
                         onDragEnd = {
                             scope.launch {
                                 when {
-                                    dragY.value > closeDistance -> onBack()
-                                    dragY.value > 0f -> dragY.animateTo(0f, heroSpring)
+                                    dragY.value > closeDistance -> { pullClose = true; onBack() }
+                                    dragY.value > 0f -> { launch { pullScale.animateTo(1f, pullBack) }; dragY.animateTo(0f, pullBack) }
                                     // The panel settles the way the finger was last going
                                     else -> info.animateTo(if (lastDy < 0f || (lastDy == 0f && info.value > 0.5f)) 1f else 0f, heroSpring)
                                 }
                             }
                         },
-                        onDragCancel = { scope.launch { dragY.animateTo(0f); info.animateTo(if (info.value > 0.5f) 1f else 0f) } }
+                        onDragCancel = { scope.launch { launch { pullScale.animateTo(1f, pullBack) }; dragY.animateTo(0f, pullBack); info.animateTo(if (info.value > 0.5f) 1f else 0f) } }
                     ) { change, dy ->
                         if (zoomed[pager.currentPage] == true || closing) return@detectVerticalDragGestures
                         change.consume()
@@ -215,7 +224,10 @@ fun ZoomViewer(
                         scope.launch {
                             // Up opens the details; down first closes them, then pulls the photo away
                             if (details != null && (info.value > 0f || (dy < 0f && dragY.value == 0f))) info.snapTo((info.value - dy / infoH).coerceIn(0f, 1f))
-                            else dragY.snapTo((dragY.value + dy).coerceAtLeast(0f))
+                            else {
+                                if (dragY.value == 0f && dy > 0f) launch { pullScale.animateTo(0.92f, tween(70)) }
+                                dragY.snapTo((dragY.value + dy).coerceAtLeast(0f))
+                            }
                         }
                     }
                 }
@@ -229,7 +241,7 @@ fun ZoomViewer(
                 modifier = Modifier.fillMaxSize().graphicsLayer {
                     val p = open.value
                     val startScale = hero?.let { it.width / w } ?: 0.85f
-                    val pull = 1f - (dragY.value / h) * 0.6f
+                    val pull = pullScale.value
                     val s = (startScale + (1f - startScale) * p) * pull * pinchS.value
                     scaleX = s; scaleY = s
                     rotationZ = pinchR.value
@@ -271,8 +283,15 @@ fun ZoomViewer(
 
             // The bars appear once the photo has landed and go at once on close
             val chromeAlpha = if (chrome && dragY.value == 0f && pinchS.value >= 0.999f && opened && !closing) 1f else 0f
+            // The top bar rides on the pulled card (Samsung's does), scaled about the screen's middle like the photo
+            val topAlpha = if (chrome && pinchS.value >= 0.999f && opened && !closing) 1f else 0f
             Row(
-                Modifier.align(Alignment.TopStart).graphicsLayer { alpha = chromeAlpha * (1f - info.value) }.fillMaxWidth()
+                Modifier.align(Alignment.TopStart).graphicsLayer {
+                    alpha = topAlpha * (1f - info.value)
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, (h / 2f) / size.height.coerceAtLeast(1f))
+                    scaleX = pullScale.value; scaleY = pullScale.value
+                    translationY = dragY.value
+                }.fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.statusBars).padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {

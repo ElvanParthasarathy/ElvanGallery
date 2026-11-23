@@ -191,7 +191,8 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
     if (asList) {
         // List level: a rounded thumbnail with the name and count beside it
         Row(
-            modifier.alpha(if (dimmed) 0.4f else 1f).fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            // The row's rounded clip (for the press ripple) is dropped while a pinch grows its cover past the row
+            modifier.alpha(if (dimmed) 0.4f else 1f).fillMaxWidth().then(if (morph?.target == null) Modifier.clip(RoundedCornerShape(12.dp)) else Modifier)
                 .combinedClickable(enabled = !dimmed, onClick = onClick, onLongClick = onLongClick).padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {

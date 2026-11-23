@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.Density
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
 
 /**
  * Where tile [index] sits in a grid of [columns] across a [width]-pixel page, measured from the first tile's top.
@@ -63,12 +65,22 @@ class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineSco
     var landed: (() -> Boolean)? = null
     /** [scrollFor] worked out once per level for this pinch. */
     val sThen = HashMap<Int, Float>()
+    /** Counts pinches: only the latest one may tidy up after itself. */
+    var gen = 0
     /** Names on tiles fade back in once a new level has landed. */
     val labels = Animatable(1f)
     /**
      * How much of the names on tiles to show (Samsung): they fade out over the first 40% of a pinch instead of
      * shrinking with their tiles, stay away while the tiles move, and fade back in over ~300 ms once the level lands.
      */
+    /** Back to rest: no pinch under way, tiles in their slots, names shown. */
+    suspend fun tidy() {
+        target = null
+        settling = false
+        progress.snapTo(0f)
+        labels.snapTo(1f)
+    }
+
     fun labelAlpha(): Float = if (target != null) labels.value * (1f - progress.value * 2.5f).coerceIn(0f, 1f) else labels.value
 }
 
@@ -81,10 +93,15 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                 awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                 var zoom = 1f
                 var pinched = false
+                var ended = false
+                // A pinch cut off half way (the previous pinch landing changes the level, which restarts this handler
+                // while fingers are still down) puts the tiles back, so the grid is never left frozen between levels
+                try {
                 do {
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     if (event.changes.count { it.pressed } > 1) {
                         if (!pinched) {
+                            morph.gen++
                             // Midpoint of every finger down now (calculateCentroid skips a finger that has only just landed)
                             val down = event.changes.filter { it.pressed }
                             morph.focus = down.fold(androidx.compose.ui.geometry.Offset.Zero) { acc, ch -> acc + ch.position } / down.size.toFloat()
@@ -109,9 +126,17 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                     }
                     else if (pinched) event.changes.forEach { it.consume() }
                 } while (event.changes.any { it.pressed })
+                ended = true
+                } finally {
+                    val g = morph.gen
+                    if (pinched && !ended) scope.launch { if (morph.gen == g) morph.tidy() }
+                }
                 if (!pinched) return@awaitEachGesture
                 val next = morph.target
+                val g = morph.gen
                 scope.launch {
+                  // Whatever cuts this short (another pinch's frame, the page going), the grid is left at rest
+                  try {
                     if (next != null && morph.progress.value > 0.3f) {
                         morph.progress.animateTo(1f, finish)
                         morph.settling = true
@@ -131,6 +156,9 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                         morph.progress.animateTo(0f, finish)
                         morph.target = null
                     }
+                  } finally {
+                    if (morph.gen == g && morph.target != null) withContext(NonCancellable) { morph.tidy() }
+                  }
                 }
             }
         }

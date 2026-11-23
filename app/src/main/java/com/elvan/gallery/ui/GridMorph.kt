@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.TransformOrigin
@@ -164,8 +165,12 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
         }
     }
 
-/** Draws tile [index] part way between its slot now and its slot at the pinch's next level. */
-fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int): Modifier = graphicsLayer {
+/**
+ * Draws tile [index] part way between its slot now and its slot at the pinch's next level. The picture is scaled
+ * evenly and clipped to the in-between shape (Samsung's): a tile that changes shape on the way (a 5:6 cover becoming a
+ * square) shows more or less of its picture instead of stretching, and its corners keep their radius.
+ */
+fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int, corner: androidx.compose.ui.unit.Dp = 12.dp): Modifier = graphicsLayer {
     val to = morph.target ?: return@graphicsLayer
     if (to == columns) return@graphicsLayer
     val p = morph.progress.value
@@ -176,17 +181,34 @@ fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int): Modifier = g
         val nowAnchor = slot(morph.anchor, columns, w, false)
         val then = slot(index, to, w, true)
         val thenAnchor = slot(morph.anchor, to, w, true)
-        translationX = (then.left - now.left) * p
         val sThen = morph.sThen[to]
-        translationY = if (morph.scrollFor != null && sThen != null) {
+        // Where the tile's top-left goes, relative to where it is laid out now
+        val dx = (then.left - now.left) * p
+        val dy = if (morph.scrollFor != null && sThen != null) {
             // Both levels on screen exactly: where the tile is now, and where the page will show it
             ((then.top - sThen) - (now.top - morph.sNow)) * p
         } else {
             val fy = morph.anchorFy
             ((then.top - (thenAnchor.top + fy * thenAnchor.height)) - (now.top - (nowAnchor.top + fy * nowAnchor.height))) * p
         }
-        scaleX = 1f + (then.width / now.width - 1f) * p
-        scaleY = 1f + (then.height / now.height - 1f) * p
+        // The in-between size, and one even scale that covers it
+        val boxW = now.width + (then.width - now.width) * p
+        val boxH = now.height + (then.height - now.height) * p
+        val u = maxOf(boxW / now.width, boxH / now.height)
+        // The part of the tile (in its own pixels) that stays in view: centred, the in-between shape
+        val cw = boxW / u
+        val ch = boxH / u
+        val cx = (size.width - cw) / 2f
+        val cy = (size.height - ch) / 2f
+        scaleX = u; scaleY = u
+        translationX = dx - u * cx
+        translationY = dy - u * cy
+        val r = corner.toPx() / u
+        shape = object : androidx.compose.ui.graphics.Shape {
+            override fun createOutline(size: androidx.compose.ui.geometry.Size, layoutDirection: androidx.compose.ui.unit.LayoutDirection, density: androidx.compose.ui.unit.Density) =
+                androidx.compose.ui.graphics.Outline.Rounded(androidx.compose.ui.geometry.RoundRect(cx, cy, cx + cw, cy + ch, r, r))
+        }
+        clip = true
     }
     transformOrigin = TransformOrigin(0f, 0f)
 }

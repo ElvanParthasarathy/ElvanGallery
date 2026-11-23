@@ -90,13 +90,16 @@ class VideoClock {
 fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoClock, onZoomChange: (Boolean) -> Unit = {}, onTap: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Samsung: while playing, the controls row hides itself after 3 s; a tap brings it back (rather than hiding all)
+    var autoHidden by remember(uri) { mutableStateOf(false) }
+    var touched by remember(uri) { androidx.compose.runtime.mutableLongStateOf(0L) }
     // Zoom (Samsung): a double tap zooms in about the tap and back out; two fingers zoom; once zoomed one finger pans
     val zoom = remember(uri) { androidx.compose.animation.core.Animatable(1f) }
     var pan by remember(uri) { mutableStateOf(Offset.Zero) }
     LaunchedEffect(zoom.value > 1.01f) { onZoomChange(zoom.value > 1.01f) }
     Box(Modifier.fillMaxSize().pointerInput(uri) {
         detectTapGestures(
-            onTap = { onTap() },
+            onTap = { if (autoHidden && chrome) { autoHidden = false; touched = System.currentTimeMillis() } else onTap() },
             onDoubleTap = { p ->
                 scope.launch {
                     val target = if (zoom.value > 1.01f) 1f else 2.5f
@@ -146,6 +149,10 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
             onDispose { if (clock.uri == uri) { clock.uri = null; clock.seek = {} }; player.release() }
         }
         var playing by remember { mutableStateOf(true) }
+        // Until the first frame is drawn the video's own picture shows (Samsung never shows a black page)
+        var firstFrame by remember(uri) { mutableStateOf(false) }
+        LaunchedEffect(chrome) { autoHidden = false }
+        LaunchedEffect(playing, chrome, touched) { autoHidden = false; if (playing && chrome) { delay(3000); autoHidden = true } }
         // Sound on or off is remembered from one video to the next, as Samsung does
         val prefs = remember { defaultPrefs(context) }
         var muted by remember { mutableStateOf(prefs.getBoolean("VIDEO_MUTED", false)) }
@@ -157,6 +164,7 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
         DisposableEffect(player) {
             val listener = object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+                override fun onRenderedFirstFrame() { firstFrame = true }
                 override fun onVideoSizeChanged(v: androidx.media3.common.VideoSize) {
                     if (v.width > 0 && v.height > 0) videoRatio = v.width * v.pixelWidthHeightRatio / v.height
                 }
@@ -167,8 +175,11 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
         LaunchedEffect(player) {
             while (true) {
                 androidx.compose.runtime.withFrameMillis { }
-                clock.position = player.currentPosition
-                clock.duration = player.duration.coerceAtLeast(0L)
+                // Only the video on show drives the shared clock
+                if (clock.uri == uri) {
+                    clock.position = player.currentPosition
+                    clock.duration = player.duration.coerceAtLeast(0L)
+                }
             }
         }
         // A texture (not a surface) so the picture can be zoomed and moved like a photo
@@ -181,6 +192,10 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
             factory = { android.view.TextureView(it).also { tv -> texture[0] = tv; player.setVideoTextureView(tv) } },
             modifier = Modifier.size(1.dp)
         )
+        if (!firstFrame) coil3.compose.AsyncImage(
+            coil3.request.ImageRequest.Builder(context).data(thumbModel(uri)).size(640).placeholderMemoryCacheKey(thumbPlaceholder(uri)).build(), null,
+            contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()
+        )
         // Samsung: after a capture, a small picture of the frame shows above the capture button for a moment
         captured?.let { b ->
             androidx.compose.foundation.Image(
@@ -191,8 +206,11 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
             )
         }
         // The capsule's foot sits 136 dp above the bottom, 18 dp over the filmstrip, as Samsung's
-        if (chrome) Row(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 136.dp),
+        androidx.compose.animation.AnimatedVisibility(
+            chrome && !autoHidden, modifier = Modifier.align(Alignment.BottomCenter),
+            enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()
+        ) { Row(
+            Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 136.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             RoundControl(Sym.Rounded.Screenshot_frame_2, "Capture") {
@@ -235,7 +253,7 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
                 if (!muted) (context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager)
                     .adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_SAME, android.media.AudioManager.FLAG_SHOW_UI)
             }
-        }
+        } }
     }
 }
 

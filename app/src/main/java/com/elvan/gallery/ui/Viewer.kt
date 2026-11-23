@@ -313,7 +313,7 @@ private fun ZoomableImage(model: Any, onTap: () -> Unit, onZoomChange: (Boolean)
             .graphicsLayer { scaleX = scale.value; scaleY = scale.value; translationX = offset.x; translationY = offset.y }
         Box(zoomModifier) {
             // The tile picture is already in memory: it shows at once, and the full photo draws over it when ready
-            AsyncImage(ImageRequest.Builder(context).data(thumbModel(model as? String)).size(320).build(), null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            AsyncImage(ImageRequest.Builder(context).data(thumbModel(model as? String)).size(320).apply { (model as? String)?.let { placeholderMemoryCacheKey(thumbPlaceholder(it)) } }.build(), null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             AsyncImage(ImageRequest.Builder(context).data(model).build(), null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
         }
     }

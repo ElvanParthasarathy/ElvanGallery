@@ -55,7 +55,7 @@ private class ThumbNode(private var uri: String, private var px: Int) : Modifier
         }
         val want = uri
         job = loader.enqueue(
-            ImageRequest.Builder(context).data(thumbModel(uri)).size(px)
+            ImageRequest.Builder(context).data(thumbModel(uri)).size(px).memoryCacheKey(thumbPlaceholder(uri))
                 .target(onSuccess = { result ->
                     if (want == uri && isAttached) { (result as? BitmapImage)?.bitmap?.let { image = it.asImageBitmap() }; invalidateDraw() }
                 })

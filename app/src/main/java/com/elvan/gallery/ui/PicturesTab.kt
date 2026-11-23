@@ -55,6 +55,9 @@ import com.elvan.navil.ElvanCheckMark
 import com.elvan.navil.rememberHaptics
 import com.elvan.navil.rememberShellColors
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
@@ -182,6 +185,42 @@ fun DatedMediaGrid(
         }
     }
     val morph = remember(media, plain) { GridMorph({ index, level, width, _ -> plan(level, width).rect.getOrNull(index)?.takeIf { it.width > 0f } ?: androidx.compose.ui.geometry.Rect(0f, 0f, 1f, 1f) }, animScope) }
+
+    // Samsung never reveals an undecoded tile during a density change. Keep a generous run around the viewport in
+    // Coil before the fingers go down, including the extra photos a denser level will bring on screen. Requests use
+    // SystemThumbKeyer's size-independent key, so PinchCanvas and the newly settled LazyGrid receive the same bitmap.
+    val thumbLoader = remember(context) { coil3.SingletonImageLoader.get(context) }
+    LaunchedEffect(media, grid, columns) {
+        androidx.compose.runtime.snapshotFlow {
+            grid.layoutInfo.visibleItemsInfo.flatMap { item ->
+                val key = item.key as? String ?: return@flatMap emptyList()
+                when {
+                    key in mediaIndex -> listOfNotNull(mediaIndex[key])
+                    else -> rowByKey[key].orEmpty().mapNotNull { mediaIndex[it.uri] }
+                }
+            }
+        }.map { it.sorted() }.distinctUntilChanged().collectLatest { visible ->
+            if (visible.isEmpty()) return@collectLatest
+            // A denser level shows ~200 photos around the fingers: ready those too, at that level's smaller size
+            val denser = levels.getOrNull(levels.indexOf(columns) + 1)
+            val reach = if (denser != null) 200 else 96
+            val from = (visible.first() - reach).coerceAtLeast(0)
+            val to = (visible.last() + reach).coerceAtMost(media.lastIndex)
+            // Nearest first, so what the pinch reveals first is ready first
+            val order = (from..to).sortedBy { i -> if (i < visible.first()) visible.first() - i else if (i > visible.last()) i - visible.last() else 0 }
+            for (i in order) {
+                val uri = media[i].uri
+                if (thumbLoader.memoryCache?.get(thumbPlaceholder(uri)) == null) {
+                    val onScreen = i in visible.first()..visible.last()
+                    thumbLoader.enqueue(
+                        coil3.request.ImageRequest.Builder(context)
+                            .data(thumbModel(uri)).size(thumbPxFor(if (onScreen || denser == null) columns else denser))
+                            .memoryCacheKey(thumbPlaceholder(uri)).build()
+                    )
+                }
+            }
+        }
+    }
 
     // As a pinch begins: the photo under the fingers (or the nearest), where on it they are, and where the page is
     morph.begin = begin@{ f ->
@@ -341,6 +380,7 @@ private fun PinchCanvas(
             val uri = media[i].uri
             if (cached(uri) == null) loader.enqueue(
                 coil3.request.ImageRequest.Builder(context).data(thumbModel(uri)).size(thumbPxFor(target))
+                    .memoryCacheKey(thumbPlaceholder(uri))
                     .listener(onSuccess = { _, _ -> loaded++ }).build()
             )
             i++
@@ -361,43 +401,9 @@ private fun PinchCanvas(
         }
         val from = minOf(now.firstVisible(sNow), then.firstVisible(sThen))
         val to = maxOf(lastVisible(now, sNow), lastVisible(then, sThen))
-        // Zooming out (Samsung): the grid shrinks as one piece toward the fingers and fades, while the denser grid
-        // fades in where it will be; nothing flies across the screen. Zooming in keeps each photo growing into place.
-        if (target > columns) {
-            val anchor = now.rect.getOrNull(morph.anchor)
-            val anchorThen = then.rect.getOrNull(morph.anchor)
-            val ratio = if (anchor != null && anchorThen != null && anchor.width > 0f) anchorThen.width / anchor.width else 0.5f
-            val sc = 1f + (ratio - 1f) * p
-            val fx = morph.focus.x
-            val fy = morph.focus.y
-            fun paint(r: androidx.compose.ui.geometry.Rect, uri: String, alpha: Float) {
-                if (r.top > h || r.bottom < 0f || r.width < 1f || r.height < 1f || alpha <= 0.01f) return
-                val img = cached(uri)
-                if (img == null) { drawRect(surface, r.topLeft, r.size, alpha = alpha); return }
-                val dw = r.width.toInt().coerceAtLeast(1)
-                val dh = r.height.toInt().coerceAtLeast(1)
-                val scale = maxOf(dw / img.width.toFloat(), dh / img.height.toFloat())
-                val sw = (dw / scale).toInt().coerceIn(1, img.width)
-                val sh = (dh / scale).toInt().coerceIn(1, img.height)
-                drawImage(img, androidx.compose.ui.unit.IntOffset((img.width - sw) / 2, (img.height - sh) / 2), androidx.compose.ui.unit.IntSize(sw, sh),
-                    androidx.compose.ui.unit.IntOffset(r.left.toInt(), r.top.toInt()), androidx.compose.ui.unit.IntSize(dw, dh), alpha = alpha)
-            }
-            // The denser level first, fading in at its place
-            var j = then.firstVisible(sThen)
-            while (j < media.size && then.rect[j].top <= sThen + h) {
-                paint(then.rect[j].translate(0f, -sThen), media[j].uri, p)
-                j++
-            }
-            // This level on top, shrinking around the fingers and fading out (its visible part grows as it shrinks)
-            val reach = h / sc
-            var i = now.firstVisible(sNow + fy - fy / sc)
-            while (i < media.size && now.rect[i].top - sNow <= fy + (reach - fy / sc) + h) {
-                val r = now.rect[i].translate(0f, -sNow)
-                if ((r.top - fy) * sc + fy > h) break
-                paint(androidx.compose.ui.geometry.Rect((r.left - fx) * sc + fx, (r.top - fy) * sc + fy, (r.right - fx) * sc + fx, (r.bottom - fy) * sc + fy), media[i].uri, 1f - p)
-                i++
-            }
-        } else for (i in from until to) {
+        // Every photo owns its transition in both directions. Zooming out must not scale the page as one film:
+        // each thumbnail shrinks and travels from its current rectangle to its own rectangle in the denser level.
+        for (i in from until to) {
             val a = now.rect[i]
             val b = then.rect[i]
             // A photo that was off screen does not travel in from far away: it fades in where it will be,
@@ -411,7 +417,8 @@ private fun PinchCanvas(
             val ht = a.height + (b.height - a.height) * k
             if (top > h || top + ht < 0f || w < 1f || ht < 1f || fade <= 0.01f) continue
             val img = cached(media[i].uri)
-            if (img == null) { drawRect(surface, androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Size(w, ht), alpha = fade); continue }
+            // A photo still loading: grey only if it was already on screen; ones arriving from off screen just wait
+            if (img == null) { if (!wasOff) drawRect(surface, androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Size(w, ht), alpha = fade); continue }
             val dw = w.toInt().coerceAtLeast(1)
             val dh = ht.toInt().coerceAtLeast(1)
             // Centre crop, as the tiles draw
@@ -421,26 +428,15 @@ private fun PinchCanvas(
             drawImage(img, androidx.compose.ui.unit.IntOffset((img.width - sw) / 2, (img.height - sh) / 2), androidx.compose.ui.unit.IntSize(sw, sh),
                 androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()), androidx.compose.ui.unit.IntSize(dw, dh), alpha = fade)
         }
-        // Date headings: this level's fade out where they are, the next level's fade in where they will be
-        // Zooming out, this level's headings shrink with its photos (around the fingers)
-        val outScale = if (target > columns) {
-            val an = now.rect.getOrNull(morph.anchor); val at = then.rect.getOrNull(morph.anchor)
-            1f + ((if (an != null && at != null && an.width > 0f) at.width / an.width else 0.5f) - 1f) * p
-        } else 1f
+        // Date headings cross-fade at the two layouts' real positions; the page itself never scales or jumps.
         if (!plain) for ((pl, s, alpha) in listOf(Triple(now, sNow, 1f - p), Triple(then, sThen, p))) {
             if (alpha <= 0.01f) continue
-            val sc = if (pl === now) outScale else 1f
             for (k in pl.headTop.indices) {
-                val y0 = pl.headTop[k] - s
-                val y = (y0 - morph.focus.y) * sc + morph.focus.y
+                val y = pl.headTop[k] - s
                 if (y > h || y < -padY * 3) continue
                 val label = pl.headLabel[k]
                 val layout = labels.getOrPut(label) { measurer.measure(label, style) }
-                val x = (padX - morph.focus.x) * sc + morph.focus.x
-                if (sc == 1f) drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(x, y + padY * sc), alpha = alpha)
-                else scale(sc, sc, androidx.compose.ui.geometry.Offset(x, y + padY * sc)) {
-                    drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(x, y + padY * sc), alpha = alpha)
-                }
+                drawText(layout, topLeft = androidx.compose.ui.geometry.Offset(padX, y + padY), alpha = alpha)
             }
         }
     }

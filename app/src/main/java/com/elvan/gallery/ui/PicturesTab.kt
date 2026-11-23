@@ -347,7 +347,7 @@ fun DatedMediaGrid(
                 prefs.edit().putInt(columnsKey, next).apply()
             },
     ) { levelContent(columns, live = true) } }
-    PinchCanvas(morph, columns, { plan(it, morph.width) }, media, colors.surface, colors.background, colors.textPrimary, plain)
+    PinchCanvas(morph, columns, { plan(it, morph.width) }, media, colors.surface, colors.background, colors.textPrimary, plain, levels.last())
     }
 }
 
@@ -360,7 +360,7 @@ fun DatedMediaGrid(
 @Composable
 private fun PinchCanvas(
     morph: GridMorph, columns: Int, plan: (Int) -> GridPlan, media: List<Media>,
-    surface: Color, background: Color, textColor: Color, plain: Boolean
+    surface: Color, background: Color, textColor: Color, plain: Boolean, lastLevel: Int
 ) {
     val target = morph.target
     val sThen = target?.let { morph.sThen[it] }
@@ -494,6 +494,13 @@ private fun PinchCanvas(
                 }
                 draw(i, x, y, ww, hh, alpha)
             }
+            // Into the densest level the crowd of small moving tiles fades away while that level fades in underneath
+            val toLast = target == lastLevel
+            val c = if (toLast) ((p - 0.2f) / 0.6f).coerceIn(0f, 1f).let { it * it * (3f - 2f * it) } else 0f
+            if (toLast && c > 0f) {
+                var j = then.firstVisible(sThen)
+                while (j < n && then.rect[j].top <= sThen + h) { val r = then.rect[j]; draw(j, r.left, r.top - sThen, r.width, r.height, c); j++ }
+            }
             // Photos on screen: rows above and below the anchor's row, at the larger column count
             val k1 = k0 + 1
             val rowsUp = kotlin.math.ceil(anchorRowTop(k0) / (cell + g)).toInt() + 2
@@ -503,11 +510,12 @@ private fun PinchCanvas(
             for (i in start..end) {
                 val same = rowOf(i, k0) - rowOf(anchor, k0) == rowOf(i, k1) - rowOf(anchor, k1) &&
                     (i - base) - rowOf(i, k0) * k0 == (i - base) - rowOf(i, k1) * k1
-                if (same || q > 0.5f) paint(i, k0, 1f)
-                else { paint(i, k0, 1f - f); paint(i, k1, f) }
+                val keep = 1f - c
+                if (same || q > 0.5f) paint(i, k0, keep)
+                else { paint(i, k0, (1f - f) * keep); paint(i, k1, f * keep) }
             }
             // Settling: the next level's photos the flowing grid did not reach fade in at their own places
-            if (q > 0f) {
+            if (q > 0f && !toLast) {
                 var j = then.firstVisible(sThen)
                 while (j < n && then.rect[j].top <= sThen + h) {
                     if (j !in start..end) { val r = then.rect[j]; draw(j, r.left, r.top - sThen, r.width, r.height, q) }
@@ -542,7 +550,7 @@ private fun PinchCanvas(
         }
         // Date headings cross-fade at the two layouts' real positions; the page itself never scales or jumps.
         val oldAlpha = if (flow) (1f - p * 3f).coerceAtLeast(0f) else 1f - p
-        val newAlpha = if (flow) q else p
+        val newAlpha = if (flow && target == lastLevel) ((p - 0.2f) / 0.6f).coerceIn(0f, 1f) else if (flow) q else p
         if (!plain) for ((pl, s, alpha) in listOf(Triple(now, sNow, oldAlpha), Triple(then, sThen, newAlpha))) {
             if (alpha <= 0.01f) continue
             for (k in pl.headTop.indices) {

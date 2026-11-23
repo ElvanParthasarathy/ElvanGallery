@@ -57,6 +57,10 @@ class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineSco
     var sNow = 0f
     /** How far the page will be scrolled at a level, so the anchor stays under the fingers (null: page has no model). */
     var scrollFor: ((Int) -> Float)? = null
+    /** Where the grid sits in the window as the pinch begins (the shell moves it as the header folds). */
+    var gridTop = 0f
+    /** Set by the page as a level changes: true once the grid shows the new level where it should be. */
+    var landed: (() -> Boolean)? = null
     /** [scrollFor] worked out once per level for this pinch. */
     val sThen = HashMap<Int, Float>()
 }
@@ -105,9 +109,11 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                         morph.progress.animateTo(1f, finish)
                         morph.settling = true
                         onChange(next)
-                        // Two frames: the grid is re-laid at the new level, where the morph is already at rest
-                        androidx.compose.runtime.withFrameNanos { }
-                        androidx.compose.runtime.withFrameNanos { }
+                        // Keep drawing the finished pinch until the grid is laid out at the new level and scrolled to
+                        // where the photos landed (two frames at least, at most ten)
+                        var frames = 0
+                        do { androidx.compose.runtime.withFrameNanos { }; frames++ } while (frames < 10 && (frames < 2 || morph.landed?.invoke() == false))
+                        morph.landed = null
                         morph.target = null
                         morph.progress.snapTo(0f)
                         delay(350)

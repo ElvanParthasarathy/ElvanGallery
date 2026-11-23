@@ -230,7 +230,8 @@ fun ZoomViewer(
                 },
                 key = { it }
             ) { page ->
-                if (isVideo(page)) VideoPage(models[page].toString(), isCurrent = pager.currentPage == page && opened, chrome = chrome && opened && !closing, clock = clock) { chrome = !chrome }
+                if (isVideo(page)) VideoPage(models[page].toString(), isCurrent = pager.currentPage == page && opened, chrome = chrome && opened && !closing, clock = clock,
+                    onZoomChange = { zoomed[page] = it }) { chrome = !chrome }
                 else ZoomableImage(models[page], onTap = {
                     if (info.value > 0f) scope.launch { info.animateTo(0f, heroSpring) } else chrome = !chrome
                 }, onZoomChange = { zoomed[page] = it },

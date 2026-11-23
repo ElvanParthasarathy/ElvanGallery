@@ -11,6 +11,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +47,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -80,10 +87,49 @@ class VideoClock {
  * the right. The filmstrip below is the seek bar: the video's frames with a white playhead.
  */
 @Composable
-fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoClock, onTap: () -> Unit) {
+fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoClock, onZoomChange: (Boolean) -> Unit = {}, onTap: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { onTap() }) }, contentAlignment = Alignment.Center) {
+    // Zoom (Samsung): a double tap zooms in about the tap and back out; two fingers zoom; once zoomed one finger pans
+    val zoom = remember(uri) { androidx.compose.animation.core.Animatable(1f) }
+    var pan by remember(uri) { mutableStateOf(Offset.Zero) }
+    LaunchedEffect(zoom.value > 1.01f) { onZoomChange(zoom.value > 1.01f) }
+    Box(Modifier.fillMaxSize().pointerInput(uri) {
+        detectTapGestures(
+            onTap = { onTap() },
+            onDoubleTap = { p ->
+                scope.launch {
+                    val target = if (zoom.value > 1.01f) 1f else 2.5f
+                    val from = pan
+                    val to = if (target == 1f) Offset.Zero else (Offset(size.width / 2f, size.height / 2f) - p) * (target - 1f)
+                    val start = zoom.value
+                    zoom.animateTo(target, androidx.compose.animation.core.spring(dampingRatio = 0.9f, stiffness = 500f)) {
+                        val t = ((value - start) / (target - start)).coerceIn(0f, 1f)
+                        pan = from + (to - from) * t
+                    }
+                }
+            },
+            // A hold does nothing (it must not also count as a tap)
+            onLongPress = {}
+        )
+    }.pointerInput(uri) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            do {
+                val event = awaitPointerEvent()
+                val fingers = event.changes.count { it.pressed }
+                if (fingers > 1 || zoom.value > 1.01f) {
+                    val z = (zoom.value * event.calculateZoom()).coerceIn(1f, 5f)
+                    scope.launch { zoom.snapTo(z) }
+                    val lim = Offset(size.width * (z - 1f) / 2f, size.height * (z - 1f) / 2f)
+                    val p = pan + event.calculatePan()
+                    pan = Offset(p.x.coerceIn(-lim.x, lim.x), p.y.coerceIn(-lim.y, lim.y))
+                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                }
+            } while (event.changes.any { it.pressed })
+            if (zoom.value < 1.05f) scope.launch { zoom.animateTo(1f); pan = Offset.Zero }
+        }
+    }, contentAlignment = Alignment.Center) {
         if (!isCurrent) {
             coil3.compose.AsyncImage(
                 coil3.request.ImageRequest.Builder(context).data(thumbModel(uri)).size(640).build(), null,
@@ -100,9 +146,21 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
             onDispose { if (clock.uri == uri) { clock.uri = null; clock.seek = {} }; player.release() }
         }
         var playing by remember { mutableStateOf(true) }
-        var muted by remember { mutableStateOf(false) }
+        // Sound on or off is remembered from one video to the next, as Samsung does
+        val prefs = remember { defaultPrefs(context) }
+        var muted by remember { mutableStateOf(prefs.getBoolean("VIDEO_MUTED", false)) }
+        LaunchedEffect(player, muted) { player.volume = if (muted) 0f else 1f }
+        var captured by remember { mutableStateOf<Bitmap?>(null) }
+        LaunchedEffect(captured) { if (captured != null) { delay(2500); captured = null } }
+        var videoRatio by remember { mutableFloatStateOf(0f) }
+        val texture = remember { arrayOfNulls<android.view.TextureView>(1) }
         DisposableEffect(player) {
-            val listener = object : Player.Listener { override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying } }
+            val listener = object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+                override fun onVideoSizeChanged(v: androidx.media3.common.VideoSize) {
+                    if (v.width > 0 && v.height > 0) videoRatio = v.width * v.pixelWidthHeightRatio / v.height
+                }
+            }
             player.addListener(listener)
             onDispose { player.removeListener(listener) }
         }
@@ -113,10 +171,25 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
                 clock.duration = player.duration.coerceAtLeast(0L)
             }
         }
-        AndroidView(
-            factory = { PlayerView(it).apply { useController = false; resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
-            modifier = Modifier.fillMaxSize()
+        // A texture (not a surface) so the picture can be zoomed and moved like a photo
+        if (videoRatio > 0f) AndroidView(
+            factory = { android.view.TextureView(it).also { tv -> texture[0] = tv; player.setVideoTextureView(tv) } },
+            modifier = Modifier.aspectRatio(videoRatio).graphicsLayer {
+                scaleX = zoom.value; scaleY = zoom.value; translationX = pan.x; translationY = pan.y
+            }
+        ) else AndroidView(
+            factory = { android.view.TextureView(it).also { tv -> texture[0] = tv; player.setVideoTextureView(tv) } },
+            modifier = Modifier.size(1.dp)
         )
+        // Samsung: after a capture, a small picture of the frame shows above the capture button for a moment
+        captured?.let { b ->
+            androidx.compose.foundation.Image(
+                b.asImageBitmap(), "Captured frame", contentScale = ContentScale.Crop,
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 176.dp)
+                    .size(30.dp * (b.width.toFloat() / b.height).coerceIn(0.5f, 2f), 30.dp).clip(RoundedCornerShape(4.dp))
+                    .border(1.dp, Color.White, RoundedCornerShape(4.dp))
+            )
+        }
         // The capsule's foot sits 136 dp above the bottom, 18 dp over the filmstrip, as Samsung's
         if (chrome) Row(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 136.dp),
@@ -124,14 +197,20 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
         ) {
             RoundControl(Sym.Rounded.Screenshot_frame_2, "Capture") {
                 scope.launch {
+                    // The frame on screen, taken from the video's texture; the file's decoder as a fallback
+                    val shown = texture[0]?.takeIf { it.isAvailable }?.bitmap
+                    val at = player.currentPosition * 1000 // the player is read on the main thread only
                     val ok = withContext(Dispatchers.IO) {
-                        val r = MediaMetadataRetriever()
-                        try {
-                            r.setDataSource(context, Uri.parse(uri))
-                            r.getFrameAtTime(player.currentPosition * 1000, MediaMetadataRetriever.OPTION_CLOSEST)?.let { saveEdited(context, it, "Captures", "Capture") } ?: false
-                        } catch (e: Exception) { false } finally { r.release() }
+                        val b = shown ?: run {
+                            val r = MediaMetadataRetriever()
+                            try {
+                                r.setDataSource(context, Uri.parse(uri))
+                                r.getFrameAtTime(at, MediaMetadataRetriever.OPTION_CLOSEST) ?: r.getFrameAtTime(at, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            } catch (e: Exception) { null } finally { r.release() }
+                        }
+                        b != null && saveEdited(context, b, "Captures", "Capture").also { saved -> if (saved) captured = b }
                     }
-                    Toast.makeText(context, if (ok) "Frame saved to Pictures/Captures" else "Could not capture", Toast.LENGTH_SHORT).show()
+                    if (!ok) Toast.makeText(context, "Could not capture", Toast.LENGTH_SHORT).show()
                 }
             }
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
@@ -146,11 +225,15 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoCloc
                 ) {
                     Icon(if (playing) Sym.RoundedFilled.Pause else Sym.RoundedFilled.Play_arrow, if (playing) "Pause" else "Play", tint = Color.White, modifier = Modifier.size(18.dp))
                     Text("  ${formatClock(clock.position)}", color = Color.White, fontSize = 13.sp)
-                    Text(" / ${formatClock(clock.duration)}", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Text(" / ${formatClock(clock.duration)}", color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp)
                 }
             }
             RoundControl(if (muted) Sym.Rounded.Volume_off else Sym.Rounded.Volume_up, if (muted) "Sound off" else "Sound on") {
-                muted = !muted; player.volume = if (muted) 0f else 1f
+                muted = !muted
+                prefs.edit().putBoolean("VIDEO_MUTED", muted).apply()
+                // Turning sound on shows the phone's volume slider, as Samsung's does
+                if (!muted) (context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager)
+                    .adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_SAME, android.media.AudioManager.FLAG_SHOW_UI)
             }
         }
     }

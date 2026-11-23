@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
 /**
  * Draws a photo's grid thumbnail, centre-cropped, straight from Coil: no composition of its own, so a grid can build
  * hundreds of tiles at once (a pinch's new level) without a pause. Whatever copy is in memory shows at once; a sharper
- * one is fetched when that copy is smaller than [px]. A photo that was not in memory fades in over 150 ms instead of
+ * one is fetched when that copy is smaller than [px]. A photo that was not in memory fades in over 240 ms instead of
  * popping onto the empty tile.
  */
 fun Modifier.thumbnail(uri: String, px: Int): Modifier = this then ThumbElement(uri, px)
@@ -63,7 +63,7 @@ private class ThumbNode(private var uri: String, private var px: Int) : Modifier
                     if (want == uri && isAttached) {
                         val first = image == null
                         (result as? BitmapImage)?.bitmap?.let { image = it.asImageBitmap() }
-                        if (first) coroutineScope.launch { fade.snapTo(0f); fade.animateTo(1f, androidx.compose.animation.core.tween(150)) }
+                        if (first) coroutineScope.launch { fade.snapTo(0f); fade.animateTo(1f, androidx.compose.animation.core.tween(240)) }
                         invalidateDraw()
                     }
                 })

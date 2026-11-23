@@ -1,5 +1,6 @@
 package com.elvan.gallery.ui
 
+import coil3.request.crossfade
 import android.app.Activity
 import android.content.ContentUris
 import android.content.Context
@@ -219,8 +220,12 @@ private fun AlbumCoverPage(
         androidx.compose.runtime.CompositionLocalProvider(com.elvan.navil.LocalElvanTopSpacerHeight provides 1.dp - com.elvan.navil.Dimens.SectionSpacing) {
             DatedMediaGrid(media, grid, selection, plain = true, cover = {
                 Box(Modifier.fillMaxWidth().height(286.dp)) {
+                    // Shows the small copy already in memory at once (the album's own tile), then cross-fades to the
+                    // sharp one; with nothing in memory it fades in rather than snapping onto the black header
+                    val first = media.first()
                     coil3.compose.AsyncImage(
-                        model = coil3.request.ImageRequest.Builder(LocalContext.current).data(media.first().let { if (it.isVideo) thumbModel(it.uri) else it.uri }).size(1080).build(),
+                        model = coil3.request.ImageRequest.Builder(LocalContext.current).data(if (first.isVideo) thumbModel(first.uri) else first.uri).size(1080)
+                            .placeholderMemoryCacheKey(thumbPlaceholder(first.uri)).crossfade(250).build(),
                         contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.fillMaxSize()
                     )
                     Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(

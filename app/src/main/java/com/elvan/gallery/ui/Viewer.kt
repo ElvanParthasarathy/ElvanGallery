@@ -117,6 +117,9 @@ object HeroBounds {
     fun rect(key: String): androidx.compose.ui.geometry.Rect? = get(key)?.boundsInWindow()
 }
 
+/** The photo the viewer shows now (its hero key), so the grid behind can keep that photo's tile in view, as Samsung's does. */
+object ViewerFollow { var key by mutableStateOf<String?>(null) }
+
 /**
  * A full-screen pager of pictures that moves like a real gallery: the photo grows out of the tile that was
  * touched and shrinks back into it, follows the finger down and closes, swipe up shows its details, pinch or double-tap
@@ -161,6 +164,8 @@ fun ZoomViewer(
     val pinchPan = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     val pageShow = remember { Animatable(1f) }
     LaunchedEffect(Unit) { open.animateTo(1f, openTween); opened = true }
+    LaunchedEffect(pager) { androidx.compose.runtime.snapshotFlow { pager.settledPage }.collect { ViewerFollow.key = heroKey(it) } }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { ViewerFollow.key = null } }
     LaunchedEffect(closing) {
         if (closing) {
             coroutineScope {

@@ -257,6 +257,36 @@ fun DatedMediaGrid(
         a
     }
 
+    // Samsung: while a photo is open, the grid behind scrolls the least it can to keep that photo's tile in full view
+    // (below the header, above the tab bar), so closing shrinks the photo into its own tile
+    val bottomSpace = with(density) { (com.elvan.navil.LocalPortraitPageBottom.current ?: 24.dp).toPx() }
+    val topSpace = with(density) { topSpacer.toPx() }
+    LaunchedEffect(media, grid) {
+        androidx.compose.runtime.snapshotFlow { ViewerFollow.key }.collect { key ->
+            val a = key?.let { mediaIndex[it] } ?: return@collect
+            val gc = gridCoords[0]?.takeIf { it.isAttached } ?: return@collect
+            val p = plan(columns, gridWidth)
+            // Where the grid is scrolled to, in the plan's terms: from any tile on screen
+            val seen = grid.layoutInfo.visibleItemsInfo.firstNotNullOfOrNull { item ->
+                val k = item.key as? String ?: return@firstNotNullOfOrNull null
+                (if (k in mediaIndex) listOf(k) else rowByKey[k]?.map { it.uri }.orEmpty())
+                    .firstNotNullOfOrNull { u -> HeroBounds.get(u)?.let { u to it } }
+            } ?: return@collect
+            val b = mediaIndex[seen.first] ?: return@collect
+            val s = p.rect[b].top - gc.localBoundingBoxOf(seen.second, clipBounds = false).top
+            val r = p.rect.getOrNull(a)?.takeIf { it.height > 0f } ?: return@collect
+            val top = r.top - s
+            val bottom = r.bottom - s
+            val limit = gc.size.height - bottomSpace
+            val by = when {
+                bottom > limit -> bottom - limit
+                top < topSpace -> top - topSpace
+                else -> 0f
+            }
+            if (by != 0f) grid.scrollBy(by)
+        }
+    }
+
     // For the fast-scroll bubble: each picture's (and each day row's) date, and where each year begins
     val days = groupsFor(columns)
     val dateOf = remember(media, columns) {

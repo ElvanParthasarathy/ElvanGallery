@@ -211,6 +211,7 @@ fun GridMorph.tileScale(index: Int, columns: Int, density: Density): Float {
  * square) shows more or less of its picture instead of stretching, and its corners grow and shrink with it.
  */
 fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int): Modifier = graphicsLayer {
+    compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Auto
     val to = morph.target ?: return@graphicsLayer
     if (to == columns) return@graphicsLayer
     val p = morph.progress.value
@@ -250,6 +251,9 @@ fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int): Modifier = g
                 androidx.compose.ui.graphics.Outline.Rounded(androidx.compose.ui.geometry.RoundRect(cx, cy, cx + cw, cy + ch, r, r))
         }
         clip = true
+        // While it moves, the card is drawn once into its own texture and only moved and scaled after that: the names'
+        // blurred shadow and the shade are not drawn again every frame
+        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
     }
     transformOrigin = TransformOrigin(0f, 0f)
 }

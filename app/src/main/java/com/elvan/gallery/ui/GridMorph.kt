@@ -181,12 +181,36 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
         }
     }
 
+/** A cover's corner for its width (Samsung's, measured on a Galaxy A53): 4 dp plus about a tenth of the width. */
+fun coverCorner(widthPx: Float, density: androidx.compose.ui.unit.Density): Float = with(density) { 4.dp.toPx() } + 0.103f * widthPx
+
+/** Rounded corners that follow the card's size, as [coverCorner]. */
+val CoverShape = object : androidx.compose.ui.graphics.Shape {
+    override fun createOutline(size: androidx.compose.ui.geometry.Size, layoutDirection: androidx.compose.ui.unit.LayoutDirection, density: androidx.compose.ui.unit.Density): androidx.compose.ui.graphics.Outline {
+        val r = coverCorner(size.width, density)
+        return androidx.compose.ui.graphics.Outline.Rounded(androidx.compose.ui.geometry.RoundRect(0f, 0f, size.width, size.height, r, r))
+    }
+}
+
+/** How much a pinch is scaling tile [index] right now (1 when no pinch moves it). */
+fun GridMorph.tileScale(index: Int, columns: Int, density: Density): Float {
+    val to = target ?: return 1f
+    if (to == columns) return 1f
+    val p = progress.value
+    if (p == 0f || width <= 0f) return 1f
+    val now = with(slots) { density.slot(index, columns, width, false) }
+    val then = with(slots) { density.slot(index, to, width, true) }
+    val boxW = now.width + (then.width - now.width) * p
+    val boxH = now.height + (then.height - now.height) * p
+    return maxOf(boxW / now.width, boxH / now.height)
+}
+
 /**
  * Draws tile [index] part way between its slot now and its slot at the pinch's next level. The picture is scaled
  * evenly and clipped to the in-between shape (Samsung's): a tile that changes shape on the way (a 5:6 cover becoming a
- * square) shows more or less of its picture instead of stretching, and its corners keep their radius.
+ * square) shows more or less of its picture instead of stretching, and its corners grow and shrink with it.
  */
-fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int, corner: androidx.compose.ui.unit.Dp = 12.dp): Modifier = graphicsLayer {
+fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int): Modifier = graphicsLayer {
     val to = morph.target ?: return@graphicsLayer
     if (to == columns) return@graphicsLayer
     val p = morph.progress.value
@@ -219,7 +243,8 @@ fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int, corner: andro
         scaleX = u; scaleY = u
         translationX = dx - u * cx
         translationY = dy - u * cy
-        val r = corner.toPx() / u
+        // The corner follows the in-between size on screen, as Samsung's cards' do
+        val r = coverCorner(boxW, this@graphicsLayer) / u
         shape = object : androidx.compose.ui.graphics.Shape {
             override fun createOutline(size: androidx.compose.ui.geometry.Size, layoutDirection: androidx.compose.ui.unit.LayoutDirection, density: androidx.compose.ui.unit.Density) =
                 androidx.compose.ui.graphics.Outline.Rounded(androidx.compose.ui.geometry.RoundRect(cx, cy, cx + cw, cy + ch, r, r))

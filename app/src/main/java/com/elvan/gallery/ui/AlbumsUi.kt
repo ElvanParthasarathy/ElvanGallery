@@ -196,7 +196,7 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
                 .combinedClickable(enabled = !dimmed, onClick = onClick, onLongClick = onLongClick).padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box((if (morph != null) Modifier.zIndex(1f).morphTile(morph, index, columns) else Modifier).size(64.dp).clip(RoundedCornerShape(12.dp)).background(colors.surface)) {
+            Box((if (morph != null) Modifier.zIndex(1f).morphTile(morph, index, columns) else Modifier).size(64.dp).clip(CoverShape).background(colors.surface)) {
                 when (entry) {
                     is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize())
                     is AlbumGroup -> GroupCover(entry, colors)
@@ -212,7 +212,7 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
     }
     // A 5:6 rounded cover with the name and count laid over its foot, on a soft shade
     Box(
-        modifier.alpha(if (dimmed) 0.4f else 1f).fillMaxWidth().aspectRatio(5f / 6f).clip(RoundedCornerShape(12.dp)).background(colors.surface).combinedClickable(
+        modifier.alpha(if (dimmed) 0.4f else 1f).fillMaxWidth().aspectRatio(5f / 6f).clip(CoverShape).background(colors.surface).combinedClickable(
             enabled = !dimmed,
             onClick = {
                 when {
@@ -233,7 +233,13 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
         // The name and its shade fade during a pinch rather than shrink with the cover
         Box(Modifier.fillMaxWidth().fillMaxHeight(0.45f).align(Alignment.BottomCenter).graphicsLayer { alpha = morph?.labelAlpha() ?: 1f }
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)))))
-        Column(Modifier.align(Alignment.BottomCenter).graphicsLayer { alpha = morph?.labelAlpha() ?: 1f }.padding(start = 8.dp, end = 8.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        // The names keep their real text size while a pinch scales the cover (Samsung's never grow or shrink)
+        Column(Modifier.align(Alignment.BottomCenter).graphicsLayer {
+            alpha = morph?.labelAlpha() ?: 1f
+            val u = morph?.tileScale(index, columns, this) ?: 1f
+            scaleX = 1f / u; scaleY = 1f / u
+            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+        }.padding(start = 8.dp, end = 8.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(model.title(entry), fontSize = 16.sp, color = Color.White,
                     style = LocalTextStyle.current.copy(shadow = Shadow(Color.Black.copy(alpha = 0.4f), blurRadius = 6f)),

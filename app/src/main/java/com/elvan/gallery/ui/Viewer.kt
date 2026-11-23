@@ -64,6 +64,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.runtime.mutableLongStateOf
 import kotlinx.coroutines.isActive
 import androidx.compose.ui.draw.drawWithContent
@@ -215,6 +217,8 @@ fun ZoomViewer(
         ) {
             HorizontalPager(
                 state = pager,
+                // Samsung turns the page on a short swipe (about a fifth of the width)
+                flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(state = pager, snapPositionalThreshold = 0.15f),
                 userScrollEnabled = zoomed[pager.currentPage] != true && info.value == 0f && !closing,
                 beyondViewportPageCount = 1,
                 modifier = Modifier.fillMaxSize().graphicsLayer {
@@ -421,6 +425,7 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
     val gapPx = with(density) { gap.toPx() }
     val current = pager.currentPage
     val openVideo = isVideo(current) && clock.uri == models.getOrNull(current)?.toString()
+    val openVideoNow = androidx.compose.runtime.rememberUpdatedState(openVideo)
     // The opened video (by its uri): it stays open while the strip is slid past it into its neighbours and back
     var expandedUri by remember { mutableStateOf<String?>(null) }
     var expandedDur by remember { mutableLongStateOf(0L) }
@@ -439,7 +444,6 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
     val frameW = 59.dp
     LaunchedEffect(dragged) { if (dragged) userDriven = true }
     // Once a hand drag has fully stopped, the strip follows the photo again
-    LaunchedEffect(dragged, list.isScrollInProgress) { if (!dragged && !list.isScrollInProgress) userDriven = false }
     // 12 dp between the strip and the floating buttons' pill
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp)) {
         val side = (maxWidth - photoW) / 2
@@ -452,9 +456,24 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
         // Where the strip's middle falls: (item, fraction across it)
         fun middle(): Pair<Int, Float>? {
             val info = list.layoutInfo
-            val it = info.visibleItemsInfo.firstOrNull { centrePx >= it.offset && centrePx < it.offset + it.size + gapPx }
+            // Item offsets start after the side padding (viewportStartOffset is minus that padding)
+            val c = centrePx + info.viewportStartOffset
+            val it = info.visibleItemsInfo.firstOrNull { c >= it.offset - gapPx / 2 && c < it.offset + it.size + gapPx / 2 }
                 ?: return null
-            return it.index to ((centrePx - it.offset) / it.size).coerceIn(0f, 1f)
+            return it.index to ((c - it.offset) / it.size).coerceIn(0f, 1f)
+        }
+        // Let go and stopped: settle with the item under the middle centred, then follow the photo again
+        // (one watcher, handled in order: the settling slide is itself a scroll and must not cancel itself)
+        val openLive by androidx.compose.runtime.rememberUpdatedState(open)
+        LaunchedEffect(list) {
+            androidx.compose.runtime.snapshotFlow { dragged || list.isScrollInProgress }.collect { busy ->
+                if (busy || !userDriven) return@collect
+                if (!openLive) middle()?.let { (i, _) ->
+                    if (i != pager.currentPage) pager.scrollToPage(i.coerceIn(0, models.size - 1))
+                    list.animateScrollToItem(i, centreOffset(widthOf(i)).toInt())
+                }
+                userDriven = false
+            }
         }
         // The photo (or the opened video's time) moves the strip, unless the strip is being moved by hand
         LaunchedEffect(pager, open) {
@@ -496,7 +515,15 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
             state = list,
             contentPadding = PaddingValues(horizontal = side),
             horizontalArrangement = Arrangement.spacedBy(gap),
-            flingBehavior = if (open) androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior() else androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(list),
+            // Samsung's strip glides less far than a plain list (a 400 px flick in 90 ms runs 8 items, not 13): the same
+            // decay at 0.6 of the speed (glide distance grows ~ speed^1.74); it settles on an item when it stops
+            flingBehavior = run {
+                val base = androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
+                remember(base) { object : androidx.compose.foundation.gestures.FlingBehavior {
+                    override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(initialVelocity: Float) =
+                        with(base) { performFling(initialVelocity * 0.6f) }
+                } }
+            },
             modifier = Modifier.height(44.dp)
         ) {
             itemsIndexed(models) { i, m ->
@@ -533,11 +560,14 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
                             drawRoundRect(Color.White, androidx.compose.ui.geometry.Offset((x - lineW / 2f).coerceIn(0f, size.width - lineW), top),
                                 androidx.compose.ui.geometry.Size(lineW, tileH + 3.dp.toPx()), androidx.compose.ui.geometry.CornerRadius(lineW / 2f))
                         } else Modifier)
-                        .pointerInput(i, current, openVideo) {
+                        // As Samsung's: each thumbnail reads "Filmstrip 3 of 120"
+                        .semantics { contentDescription = "Filmstrip ${i + 1} of ${models.size}" }
+                        // Keyed on the item alone, so the handlers are not restarted each time the photo changes during a drag
+                        .pointerInput(i) {
                             detectTapGestures(
                                 onTap = { userDriven = false; close(); scope.launch { pager.scrollToPage(i) } },
                                 onDoubleTap = {
-                                    if (i == current && openVideo) {
+                                    if (i == pager.currentPage && openVideoNow.value) {
                                         expandedUri = m.toString(); expandedDur = clock.duration
                                         scope.launch { openAnim.snapTo(0f); openAnim.animateTo(1f, openEase) }
                                     } else { close(); scope.launch { pager.scrollToPage(i) } }

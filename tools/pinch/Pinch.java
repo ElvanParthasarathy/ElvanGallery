@@ -14,6 +14,7 @@ public class Pinch {
     private static Object im;
     private static Method inject;
     private static double turn, at;
+    private static int mode = 2;
 
     public static void main(String[] a) throws Exception {
         if (a[0].equals("tap2")) { // tap2 x y: a real double tap (two taps 90 ms apart)
@@ -26,6 +27,16 @@ public class Pinch {
                 send(d, MotionEvent.ACTION_UP, x, y, 0, 1);
                 if (k == 0) SystemClock.sleep(90);
             }
+            return;
+        }
+        if (a[0].equals("swipe")) { // swipe x1 x2 y ms: one finger, a move every 8 ms, lifted at full speed (a real flick)
+            init();
+            float x1 = Float.parseFloat(a[1]), x2 = Float.parseFloat(a[2]), y = Float.parseFloat(a[3]);
+            long ms = Long.parseLong(a[4]), d = SystemClock.uptimeMillis(), steps = Math.max(2, ms / 8);
+            send(d, MotionEvent.ACTION_DOWN, x1, y, 0, 1);
+            mode = 0; // async: events carry the finger's real times even if the app is busy, as a real touchscreen's do
+            for (long i = 1; i <= steps; i++) { SystemClock.sleep(8); send(d, MotionEvent.ACTION_MOVE, x1 + (x2 - x1) * i / steps, y, 0, 1); }
+            send(d, MotionEvent.ACTION_UP, x2, y, 0, 1);
             return;
         }
         float cx = Float.parseFloat(a[0]), cy = Float.parseFloat(a[1]);
@@ -68,7 +79,7 @@ public class Pinch {
             coords[i].size = 1f;
         }
         MotionEvent e = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, n, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
-        inject.invoke(im, e, 2); // wait for the app to handle it
+        inject.invoke(im, e, mode); // 2: wait for the app to handle it
         e.recycle();
     }
 }

@@ -64,6 +64,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.mutableLongStateOf
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.gestures.scrollBy
@@ -419,8 +421,14 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
     val gapPx = with(density) { gap.toPx() }
     val current = pager.currentPage
     val openVideo = isVideo(current) && clock.uri == models.getOrNull(current)?.toString()
-    var expanded by remember(current) { mutableStateOf(false) }
-    val open = openVideo && expanded
+    // The opened video (by its uri): it stays open while the strip is slid past it into its neighbours and back
+    var expandedUri by remember { mutableStateOf<String?>(null) }
+    var expandedDur by remember { mutableLongStateOf(0L) }
+    val open = openVideo && expandedUri == models.getOrNull(current)?.toString()
+    // Read live inside the long-running drag watcher below (a plain val would be the value it started with)
+    val openNow by androidx.compose.runtime.rememberUpdatedState(open)
+    // Swiping the photo (not the strip) closes it again
+    LaunchedEffect(current) { if (!userDriven && !dragged && models.getOrNull(current)?.toString() != expandedUri) expandedUri = null }
     // The opened strip: 59 dp per frame and about 1.33 dp per second of video (Samsung's pace), at least the screen
     val frameW = 59.dp
     LaunchedEffect(dragged) { if (dragged) userDriven = true }
@@ -430,7 +438,7 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp)) {
         val side = (maxWidth - photoW) / 2
         val centrePx = with(density) { maxWidth.toPx() } / 2f
-        val openW = maxOf(maxWidth, (clock.duration / 1000f * 1.33f).dp, frameW * 3)
+        val openW = maxOf(maxWidth, (expandedDur / 1000f * 1.33f).dp, frameW * 3)
         val openPx = with(density) { openW.toPx() }
         // An item of width w sits centred when scrolled to by this much past its start
         fun centreOffset(w: androidx.compose.ui.unit.Dp) = with(density) { ((w - photoW) / 2).toPx() }
@@ -446,17 +454,21 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
             androidx.compose.runtime.snapshotFlow {
                 Triple(pager.currentPage + pager.currentPageOffsetFraction, clock.position, clock.duration)
             }.collect { (at, pos, dur) ->
-                if (userDriven) return@collect
+                // A hand on the strip leads; the strip follows the video again once it is let go and settles
+                if (userDriven || dragged) return@collect
                 val i = kotlin.math.floor(at).toInt().coerceAtLeast(0)
                 val settled = kotlin.math.abs(at - i) < 0.001f
-                if (settled && open && dur > 0) {
-                    // The playhead stays in the middle; the frames slide under it
-                    list.scrollToItem(i, 0)
-                    list.scrollBy(pos.toFloat() / dur * openPx - with(density) { photoW.toPx() } / 2f)
-                } else {
-                    val w = with(density) { widthOf(i).toPx() }
-                    list.scrollToItem(i, (centreOffset(widthOf(i)) + (at - i) * (w + gapPx)).toInt())
-                }
+                try {
+                    if (settled && open && dur > 0) {
+                        // The playhead stays in the middle; the frames slide under it
+                        list.scrollToItem(i, 0)
+                        list.scrollBy(pos.toFloat() / dur * openPx - with(density) { photoW.toPx() } / 2f)
+                    } else {
+                        val w = with(density) { widthOf(i).toPx() }
+                        list.scrollToItem(i, (centreOffset(widthOf(i)) + (at - i) * (w + gapPx)).toInt())
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) { if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw e } // a hand took the strip
+
             }
         }
         // Moved by hand: over the opened video it seeks; elsewhere the photo in the middle shows at once
@@ -464,7 +476,8 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
             androidx.compose.runtime.snapshotFlow { Triple(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset, list.isScrollInProgress) }.collect { (_, _, moving) ->
                 if (!userDriven) return@collect
                 val (i, f) = middle() ?: return@collect
-                if (i == pager.currentPage && open) { if (clock.duration > 0) clock.seek((f * clock.duration).toLong()) }
+                if (i == pager.currentPage && openNow) { if (clock.duration > 0) clock.seek((f * clock.duration).toLong()) }
+                else if (models.getOrNull(i)?.toString() == expandedUri && i != pager.currentPage) pager.scrollToPage(i)
                 else if (i != pager.currentPage) pager.scrollToPage(i.coerceIn(0, models.size - 1))
                 if (!moving) userDriven = false
             }
@@ -477,7 +490,7 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
             modifier = Modifier.height(44.dp)
         ) {
             itemsIndexed(models) { i, m ->
-                if (i == current && open) {
+                if (isVideo(i) && m.toString() == expandedUri) {
                     Row(Modifier.size(openW, 44.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF1F1F1F))) {
                         val n = (openW / frameW).toInt().coerceAtLeast(1)
                         videoFrames(m.toString(), n).forEach {
@@ -509,7 +522,10 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
                         .pointerInput(i, current, openVideo) {
                             detectTapGestures(
                                 onTap = { userDriven = false; scope.launch { pager.scrollToPage(i) } },
-                                onDoubleTap = { if (i == current && openVideo) expanded = true else scope.launch { pager.scrollToPage(i) } }
+                                onDoubleTap = {
+                                    if (i == current && openVideo) { expandedUri = m.toString(); expandedDur = clock.duration }
+                                    else scope.launch { pager.scrollToPage(i) }
+                                }
                             )
                         }
                 ) {

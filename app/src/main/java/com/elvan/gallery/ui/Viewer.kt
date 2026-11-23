@@ -291,8 +291,11 @@ fun ZoomViewer(
                 // A video page shows its own strip of frames instead (its seek bar)
                 // Shown for videos too, as Samsung does
                 if (filmstrip && models.size > 1) Filmstrip(models, pager, isVideo, clock)
-                // Samsung's buttons: bare white icons, no bar behind, five equal slots 10 dp in from the edges
-                if (models.isNotEmpty() && chromeAlpha > 0f) Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 4.dp).height(48.dp)) {
+                // Elvan Navil's floating pill, with the icons in Samsung's places: five equal slots 10 dp in from the edges
+                if (models.isNotEmpty() && chromeAlpha > 0f) Row(
+                    Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 4.dp).height(48.dp)
+                        .clip(CircleShape).background(Color(0xB8252527))
+                ) {
                     actions(pager.currentPage) { scope.launch { info.animateTo(1f, heroSpring) } }.forEach { a ->
                         Box(
                             Modifier.weight(1f).fillMaxSize().clip(CircleShape).clickable(enabled = a.enabled, onClick = a.onClick),
@@ -411,8 +414,8 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
     LaunchedEffect(dragged) { if (dragged) userDriven = true }
     // Once a hand drag has fully stopped, the strip follows the photo again
     LaunchedEffect(dragged, list.isScrollInProgress) { if (!dragged && !list.isScrollInProgress) userDriven = false }
-    // Samsung: 6 dp between the strip and the buttons' row
-    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp)) {
+    // 12 dp between the strip and the floating buttons' pill
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp)) {
         val side = (maxWidth - itemW) / 2
         val centrePx = with(density) { maxWidth.toPx() } / 2f
         // Where the strip's middle falls: (item, fraction across it)

@@ -16,13 +16,23 @@ public class Pinch {
     private static double turn, at;
 
     public static void main(String[] a) throws Exception {
+        if (a[0].equals("tap2")) { // tap2 x y: a real double tap (two taps 90 ms apart)
+            init();
+            float x = Float.parseFloat(a[1]), y = Float.parseFloat(a[2]);
+            for (int k = 0; k < 2; k++) {
+                long d = SystemClock.uptimeMillis();
+                send(d, MotionEvent.ACTION_DOWN, x, y, 0, 1);
+                SystemClock.sleep(40);
+                send(d, MotionEvent.ACTION_UP, x, y, 0, 1);
+                if (k == 0) SystemClock.sleep(90);
+            }
+            return;
+        }
         float cx = Float.parseFloat(a[0]), cy = Float.parseFloat(a[1]);
         float from = Float.parseFloat(a[2]), to = Float.parseFloat(a[3]);
         long ms = Long.parseLong(a[4]), hold = a.length > 5 ? Long.parseLong(a[5]) : 0;
         turn = a.length > 6 ? Math.toRadians(Double.parseDouble(a[6])) : 0;
-        Class<?> c = Class.forName("android.hardware.input.InputManagerGlobal");
-        im = c.getMethod("getInstance").invoke(null);
-        inject = c.getMethod("injectInputEvent", InputEvent.class, int.class);
+        init();
         long down = SystemClock.uptimeMillis();
         send(down, MotionEvent.ACTION_DOWN, cx, cy, from, 1);
         send(down, MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT), cx, cy, from, 2);
@@ -35,6 +45,12 @@ public class Pinch {
         if (hold > 0) SystemClock.sleep(hold);
         send(down, MotionEvent.ACTION_POINTER_UP | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT), cx, cy, to, 2);
         send(down, MotionEvent.ACTION_UP, cx, cy, to, 1);
+    }
+
+    private static void init() throws Exception {
+        Class<?> c = Class.forName("android.hardware.input.InputManagerGlobal");
+        im = c.getMethod("getInstance").invoke(null);
+        inject = c.getMethod("injectInputEvent", InputEvent.class, int.class);
     }
 
     private static void send(long down, int action, float cx, float cy, float span, int n) throws Exception {

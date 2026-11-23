@@ -64,6 +64,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -394,6 +395,13 @@ private fun VideoPoster(model: Any, onTap: () -> Unit, onPlay: () -> Unit) {
  * in the middle grows to 33 x 44 dp and its neighbours step aside. It follows the photo as it is swiped, and dragging it
  * shows the photo in the middle at once (no slide); it settles on a thumbnail.
  */
+/**
+ * Samsung Gallery's strip (measured on a Galaxy A53): photos are 27 x 36 dp, videos 48 x 36 dp (4:3), 4 dp apart; the
+ * one in the middle grows to 44 dp high and its neighbours step aside. It follows the photo as it is swiped; dragging it
+ * shows the photo in the middle at once; it settles on a thumbnail. The open video's tile carries a white playhead that
+ * moves across it as it plays; a double tap on that tile opens the video's frames into a long strip under a fixed
+ * playhead in the middle, which slides as it plays and seeks when dragged (it stays open until another photo is shown).
+ */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.pager.PagerState, isVideo: (Int) -> Boolean, clock: VideoClock) {
@@ -402,50 +410,60 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
     val list = rememberLazyListState(initialFirstVisibleItemIndex = pager.currentPage)
     val dragged by list.interactionSource.collectIsDraggedAsState()
     var userDriven by remember { mutableStateOf(false) }
-    val itemW = 27.dp
+    val photoW = 27.dp
+    val videoW = 48.dp
     val gap = 4.dp
-    // The open video's tile is its frames, 180 dp wide (Samsung's)
-    val videoW = 180.dp
-    val itemPx = with(density) { itemW.toPx() }
-    val videoPx = with(density) { videoW.toPx() }
-    val pitchPx = with(density) { (itemW + gap).toPx() }
+    val grow = 44f / 36f
+    fun widthOf(i: Int) = if (isVideo(i)) videoW else photoW
+    val gapPx = with(density) { gap.toPx() }
     val current = pager.currentPage
     val openVideo = isVideo(current) && clock.uri == models.getOrNull(current)?.toString()
+    var expanded by remember(current) { mutableStateOf(false) }
+    val open = openVideo && expanded
+    // The opened strip: 59 dp per frame and about 1.33 dp per second of video (Samsung's pace), at least the screen
+    val frameW = 59.dp
     LaunchedEffect(dragged) { if (dragged) userDriven = true }
     // Once a hand drag has fully stopped, the strip follows the photo again
     LaunchedEffect(dragged, list.isScrollInProgress) { if (!dragged && !list.isScrollInProgress) userDriven = false }
     // 12 dp between the strip and the floating buttons' pill
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp)) {
-        val side = (maxWidth - itemW) / 2
+        val side = (maxWidth - photoW) / 2
         val centrePx = with(density) { maxWidth.toPx() } / 2f
+        val openW = maxOf(maxWidth, (clock.duration / 1000f * 1.33f).dp, frameW * 3)
+        val openPx = with(density) { openW.toPx() }
+        // An item of width w sits centred when scrolled to by this much past its start
+        fun centreOffset(w: androidx.compose.ui.unit.Dp) = with(density) { ((w - photoW) / 2).toPx() }
         // Where the strip's middle falls: (item, fraction across it)
         fun middle(): Pair<Int, Float>? {
             val info = list.layoutInfo
-            val it = info.visibleItemsInfo.firstOrNull { centrePx >= it.offset && centrePx < it.offset + it.size + gap.value * density.density }
+            val it = info.visibleItemsInfo.firstOrNull { centrePx >= it.offset && centrePx < it.offset + it.size + gapPx }
                 ?: return null
             return it.index to ((centrePx - it.offset) / it.size).coerceIn(0f, 1f)
         }
-        // The photo (or the video's time) moves the strip, unless the strip is being moved by hand
-        LaunchedEffect(pager, openVideo) {
+        // The photo (or the opened video's time) moves the strip, unless the strip is being moved by hand
+        LaunchedEffect(pager, open) {
             androidx.compose.runtime.snapshotFlow {
                 Triple(pager.currentPage + pager.currentPageOffsetFraction, clock.position, clock.duration)
             }.collect { (at, pos, dur) ->
                 if (userDriven) return@collect
                 val i = kotlin.math.floor(at).toInt().coerceAtLeast(0)
                 val settled = kotlin.math.abs(at - i) < 0.001f
-                if (settled && openVideo && dur > 0) {
+                if (settled && open && dur > 0) {
                     // The playhead stays in the middle; the frames slide under it
                     list.scrollToItem(i, 0)
-                    list.scrollBy(pos.toFloat() / dur * videoPx - itemPx / 2f)
-                } else list.scrollToItem(i, ((at - i) * pitchPx).toInt())
+                    list.scrollBy(pos.toFloat() / dur * openPx - with(density) { photoW.toPx() } / 2f)
+                } else {
+                    val w = with(density) { widthOf(i).toPx() }
+                    list.scrollToItem(i, (centreOffset(widthOf(i)) + (at - i) * (w + gapPx)).toInt())
+                }
             }
         }
-        // Moved by hand: over the open video it seeks; elsewhere the photo in the middle shows at once
+        // Moved by hand: over the opened video it seeks; elsewhere the photo in the middle shows at once
         LaunchedEffect(list) {
             androidx.compose.runtime.snapshotFlow { Triple(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset, list.isScrollInProgress) }.collect { (_, _, moving) ->
                 if (!userDriven) return@collect
                 val (i, f) = middle() ?: return@collect
-                if (i == pager.currentPage && openVideo) { if (clock.duration > 0) clock.seek((f * clock.duration).toLong()) }
+                if (i == pager.currentPage && open) { if (clock.duration > 0) clock.seek((f * clock.duration).toLong()) }
                 else if (i != pager.currentPage) pager.scrollToPage(i.coerceIn(0, models.size - 1))
                 if (!moving) userDriven = false
             }
@@ -454,42 +472,56 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
             state = list,
             contentPadding = PaddingValues(horizontal = side),
             horizontalArrangement = Arrangement.spacedBy(gap),
-            flingBehavior = if (openVideo) androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior() else androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(list),
+            flingBehavior = if (open) androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior() else androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(list),
             modifier = Modifier.height(44.dp)
         ) {
             itemsIndexed(models) { i, m ->
-                val wide = i == current && openVideo
-                if (wide) {
-                    Row(Modifier.size(videoW, 44.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF1F1F1F))) {
-                        videoFrames(m.toString(), 3).forEach {
+                if (i == current && open) {
+                    Row(Modifier.size(openW, 44.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF1F1F1F))) {
+                        val n = (openW / frameW).toInt().coerceAtLeast(1)
+                        videoFrames(m.toString(), n).forEach {
                             androidx.compose.foundation.Image(it.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.weight(1f).then(Modifier.fillMaxSize()))
                         }
                     }
                     return@itemsIndexed
                 }
+                val w = widthOf(i)
                 Box(
-                    Modifier.size(itemW, 44.dp).graphicsLayer {
-                        // How close this thumbnail is to the middle (in steps): it grows there, the rest step aside
-                        val info = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == i }
-                        val d = if (info == null) 9f else (info.offset + info.size / 2f - centrePx) / pitchPx
-                        val near = if (openVideo) 0f else (1f - kotlin.math.abs(d)).coerceIn(0f, 1f)
-                        val grow = 33f / 27f
+                    Modifier.size(w, 44.dp).graphicsLayer {
+                        // How far this thumbnail is from the photo on show (in steps): it grows there, the rest step aside
+                        val d = i - (pager.currentPage + pager.currentPageOffsetFraction)
+                        val near = (1f - kotlin.math.abs(d)).coerceIn(0f, 1f)
                         scaleX = 1f + (grow - 1f) * near
                         scaleY = 1f + (grow - 1f) * near
-                        translationX = if (openVideo) 0f else (grow - 1f) * itemW.toPx() / 2f * d.coerceIn(-1f, 1f)
+                        translationX = (grow - 1f) * widthOf(current).toPx() / 2f * d.coerceIn(-1f, 1f)
                     }
-                        .clickable { userDriven = false; scope.launch { pager.scrollToPage(i) } }
+                        .then(if (i == current && openVideo) Modifier.drawWithContent {
+                            drawContent()
+                            // The playhead moves across the open video's tile as it plays, a little taller than the tile
+                            val tileH = 36.dp.toPx()
+                            val x = if (clock.duration > 0) clock.position.toFloat() / clock.duration * size.width else 0f
+                            val lineW = 2.dp.toPx()
+                            val top = (size.height - tileH) / 2f - 1.5.dp.toPx()
+                            drawRoundRect(Color.White, androidx.compose.ui.geometry.Offset((x - lineW / 2f).coerceIn(0f, size.width - lineW), top),
+                                androidx.compose.ui.geometry.Size(lineW, tileH + 3.dp.toPx()), androidx.compose.ui.geometry.CornerRadius(lineW / 2f))
+                        } else Modifier)
+                        .pointerInput(i, current, openVideo) {
+                            detectTapGestures(
+                                onTap = { userDriven = false; scope.launch { pager.scrollToPage(i) } },
+                                onDoubleTap = { if (i == current && openVideo) expanded = true else scope.launch { pager.scrollToPage(i) } }
+                            )
+                        }
                 ) {
-                    Box(Modifier.align(Alignment.Center).size(itemW, 36.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF1F1F1F))) {
+                    Box(Modifier.align(Alignment.Center).size(w, 36.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF1F1F1F))) {
                         Thumb(m.toString(), Modifier.fillMaxSize())
-                        if (isVideo(i)) Icon(com.composables.icons.materialsymbols.MaterialSymbols.RoundedFilled.Play_arrow, null, tint = Color.White,
-                            modifier = Modifier.align(Alignment.BottomStart).size(12.dp))
+                        if (isVideo(i) && !(i == current && openVideo)) Icon(com.composables.icons.materialsymbols.MaterialSymbols.RoundedFilled.Play_arrow, null, tint = Color.White,
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(2.dp).size(12.dp))
                     }
                 }
             }
         }
-        // Samsung's playhead: a white line through the middle over the open video's frames
-        if (openVideo) Box(Modifier.align(Alignment.Center).size(2.dp, 44.dp).graphicsLayer { scaleY = 48f / 44f }.background(Color.White, RoundedCornerShape(1.dp)))
+        // The opened strip's playhead: a white line through the middle
+        if (open) Box(Modifier.align(Alignment.Center).size(2.dp, 44.dp).graphicsLayer { scaleY = 48f / 44f }.background(Color.White, RoundedCornerShape(1.dp)))
     }
 }
 

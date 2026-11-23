@@ -63,6 +63,13 @@ class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineSco
     var landed: (() -> Boolean)? = null
     /** [scrollFor] worked out once per level for this pinch. */
     val sThen = HashMap<Int, Float>()
+    /** Names on tiles fade back in once a new level has landed. */
+    val labels = Animatable(1f)
+    /**
+     * How much of the names on tiles to show (Samsung): they fade out over the first quarter of a pinch instead of
+     * shrinking with their tiles, stay away while the tiles move, and fade back in over ~200 ms once the level lands.
+     */
+    fun labelAlpha(): Float = if (target != null) labels.value * (1f - progress.value * 4f).coerceIn(0f, 1f) else labels.value
 }
 
 fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, levels: List<Int>, firstTile: Int, onChange: (Int) -> Unit): Modifier =
@@ -114,8 +121,10 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                         var frames = 0
                         do { androidx.compose.runtime.withFrameNanos { }; frames++ } while (frames < 10 && (frames < 2 || morph.landed?.invoke() == false))
                         morph.landed = null
+                        morph.labels.snapTo(0f)
                         morph.target = null
                         morph.progress.snapTo(0f)
+                        launch { morph.labels.animateTo(1f, androidx.compose.animation.core.tween(200)) }
                         delay(350)
                         morph.settling = false
                     } else {

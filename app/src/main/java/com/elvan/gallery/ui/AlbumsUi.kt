@@ -202,7 +202,7 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
                 }
                 if (model.selecting && !model.pickingGroup) ElvanCheckMark(on, colors.link, Color.White, 20.dp, Modifier.align(Alignment.TopStart).padding(4.dp))
             }
-            Column(Modifier.padding(start = 14.dp).weight(1f).graphicsLayer { alpha = if (morph?.target != null) 1f - morph.progress.value else 1f }) {
+            Column(Modifier.padding(start = 14.dp).weight(1f).graphicsLayer { alpha = morph?.labelAlpha() ?: 1f }) {
                 Text(model.title(entry), fontSize = 16.sp, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (entry is AlbumGroup) "${entry.albums.size} albums" else "${entry.count}", fontSize = 13.sp, color = colors.textSecondary, modifier = Modifier.padding(top = 2.dp))
             }
@@ -229,9 +229,10 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
             is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize())
             is AlbumGroup -> GroupCover(entry, colors)
         }
-        Box(Modifier.fillMaxWidth().fillMaxHeight(0.45f).align(Alignment.BottomCenter)
+        // The name and its shade fade during a pinch rather than shrink with the cover
+        Box(Modifier.fillMaxWidth().fillMaxHeight(0.45f).align(Alignment.BottomCenter).graphicsLayer { alpha = morph?.labelAlpha() ?: 1f }
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)))))
-        Column(Modifier.align(Alignment.BottomCenter).padding(start = 8.dp, end = 8.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(Modifier.align(Alignment.BottomCenter).graphicsLayer { alpha = morph?.labelAlpha() ?: 1f }.padding(start = 8.dp, end = 8.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(model.title(entry), fontSize = 16.sp, color = Color.White,
                     style = LocalTextStyle.current.copy(shadow = Shadow(Color.Black.copy(alpha = 0.4f), blurRadius = 6f)),

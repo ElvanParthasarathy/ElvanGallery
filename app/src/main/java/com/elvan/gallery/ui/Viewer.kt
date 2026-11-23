@@ -64,6 +64,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -285,7 +286,8 @@ fun ZoomViewer(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // A video page shows its own strip of frames instead (its seek bar)
-                if (filmstrip && models.size > 1 && !isVideo(pager.currentPage)) Filmstrip(models, pager.currentPage) { scope.launch { pager.animateScrollToPage(it) } }
+                // Shown for videos too, as Samsung does
+                if (filmstrip && models.size > 1) Filmstrip(models, pager)
                 if (models.isNotEmpty() && chromeAlpha > 0f) ElvanFloatingActionBar(
                     actions = actions(pager.currentPage) { scope.launch { info.animateTo(1f, heroSpring) } },
                     showLabels = false,
@@ -375,24 +377,73 @@ private fun VideoPoster(model: Any, onTap: () -> Unit, onPlay: () -> Unit) {
 }
 
 /** Small thumbnails under the picture; the current one sits in the middle and is outlined. */
+/**
+ * Samsung Gallery's strip (measured on a Galaxy A53): 27 x 36 dp thumbnails 4 dp apart with small round corners; the one
+ * in the middle grows to 33 x 44 dp and its neighbours step aside. It follows the photo as it is swiped, and dragging it
+ * shows the photo in the middle at once (no slide); it settles on a thumbnail.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun Filmstrip(models: List<Any>, current: Int, onPick: (Int) -> Unit) {
-    val list = rememberLazyListState(initialFirstVisibleItemIndex = current)
-    BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
-        val item = 44.dp
-        val side = (maxWidth - item) / 2
-        LaunchedEffect(current) { list.animateScrollToItem(current) }
-        LazyRow(state = list, contentPadding = PaddingValues(horizontal = side), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.pager.PagerState) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val list = rememberLazyListState(initialFirstVisibleItemIndex = pager.currentPage)
+    val dragged by list.interactionSource.collectIsDraggedAsState()
+    var userDriven by remember { mutableStateOf(false) }
+    val itemW = 27.dp
+    val gap = 4.dp
+    val pitchPx = with(density) { (itemW + gap).toPx() }
+    LaunchedEffect(dragged) { if (dragged) userDriven = true }
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+        val side = (maxWidth - itemW) / 2
+        // The photo moves the strip, unless the strip is being moved by hand
+        LaunchedEffect(pager) {
+            androidx.compose.runtime.snapshotFlow { pager.currentPage + pager.currentPageOffsetFraction }.collect { at ->
+                if (userDriven) return@collect
+                val i = kotlin.math.floor(at).toInt().coerceAtLeast(0)
+                list.scrollToItem(i, ((at - i) * pitchPx).toInt())
+            }
+        }
+        // The strip moved by hand shows the photo in its middle straight away
+        LaunchedEffect(list) {
+            androidx.compose.runtime.snapshotFlow { Triple(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset, list.isScrollInProgress) }.collect { (i, off, moving) ->
+                if (!userDriven) return@collect
+                val target = (i + kotlin.math.round(off / pitchPx).toInt()).coerceIn(0, models.size - 1)
+                if (target != pager.currentPage) pager.scrollToPage(target)
+                if (!moving) userDriven = false
+            }
+        }
+        LazyRow(
+            state = list,
+            contentPadding = PaddingValues(horizontal = side),
+            horizontalArrangement = Arrangement.spacedBy(gap),
+            flingBehavior = androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(list),
+            modifier = Modifier.height(44.dp)
+        ) {
             itemsIndexed(models) { i, m ->
                 Box(
-                    Modifier.size(item, 56.dp).clip(RoundedCornerShape(8.dp))
-                        .then(if (i == current) Modifier.border(2.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier)
-                        .clickable { onPick(i) }
-                ) { Thumb(m.toString(), Modifier.fillMaxSize()) }
+                    Modifier.size(itemW, 44.dp).graphicsLayer {
+                        // How close this thumbnail is to the middle: 1 there, 0 one step away or more
+                        val at = list.firstVisibleItemIndex + list.firstVisibleItemScrollOffset / pitchPx
+                        val d = i - at
+                        val near = (1f - kotlin.math.abs(d)).coerceIn(0f, 1f)
+                        val grow = 33f / 27f
+                        scaleX = 1f + (grow - 1f) * near
+                        scaleY = 1f + (grow - 1f) * near
+                        // Everything either side steps aside by the extra width the middle one takes
+                        translationX = (grow - 1f) * itemW.toPx() / 2f * d.coerceIn(-1f, 1f)
+                    }
+                        .clickable { userDriven = false; scope.launch { pager.scrollToPage(i) } }
+                ) {
+                    Box(Modifier.align(Alignment.Center).size(itemW, 36.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF1F1F1F))) {
+                        Thumb(m.toString(), Modifier.fillMaxSize())
+                    }
+                }
             }
         }
     }
 }
+
 
 /** The pictures viewer: favourite, edit, details, share, delete, rename, wallpaper, print. */
 @Composable

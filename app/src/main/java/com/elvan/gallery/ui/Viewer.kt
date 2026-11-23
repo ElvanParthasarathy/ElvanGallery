@@ -64,6 +64,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.draw.clip
@@ -133,6 +135,7 @@ fun ZoomViewer(
     showTitle: Boolean = true
 ) {
     val pager = rememberPagerState(initialPage = start.coerceIn(0, (models.size - 1).coerceAtLeast(0))) { models.size }
+    val clock = remember { VideoClock() }
     var chrome by remember { mutableStateOf(true) }
     val zoomed = remember { mutableStateMapOf<Int, Boolean>() }
     val colors = rememberShellColors()
@@ -226,7 +229,7 @@ fun ZoomViewer(
                 },
                 key = { it }
             ) { page ->
-                if (isVideo(page)) VideoPage(models[page].toString(), isCurrent = pager.currentPage == page && opened, chrome = chrome && opened && !closing) { chrome = !chrome }
+                if (isVideo(page)) VideoPage(models[page].toString(), isCurrent = pager.currentPage == page && opened, chrome = chrome && opened && !closing, clock = clock) { chrome = !chrome }
                 else ZoomableImage(models[page], onTap = {
                     if (info.value > 0f) scope.launch { info.animateTo(0f, heroSpring) } else chrome = !chrome
                 }, onZoomChange = { zoomed[page] = it },
@@ -287,13 +290,19 @@ fun ZoomViewer(
             ) {
                 // A video page shows its own strip of frames instead (its seek bar)
                 // Shown for videos too, as Samsung does
-                if (filmstrip && models.size > 1) Filmstrip(models, pager)
-                if (models.isNotEmpty() && chromeAlpha > 0f) ElvanFloatingActionBar(
-                    actions = actions(pager.currentPage) { scope.launch { info.animateTo(1f, heroSpring) } },
-                    showLabels = false,
-                    barHeight = 48.dp,
-                    containerColor = Color(0xB8252527)
-                )
+                if (filmstrip && models.size > 1) Filmstrip(models, pager, isVideo, clock)
+                // Samsung's buttons: bare white icons, no bar behind, five equal slots 10 dp in from the edges
+                if (models.isNotEmpty() && chromeAlpha > 0f) Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 4.dp).height(48.dp)) {
+                    actions(pager.currentPage) { scope.launch { info.animateTo(1f, heroSpring) } }.forEach { a ->
+                        Box(
+                            Modifier.weight(1f).fillMaxSize().clip(CircleShape).clickable(enabled = a.enabled, onClick = a.onClick),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(a.icon, a.label, tint = a.customColor ?: Color.White, modifier = Modifier.size(24.dp))
+                            a.menu?.invoke()
+                        }
+                    }
+                }
             }
         }
     }
@@ -384,7 +393,7 @@ private fun VideoPoster(model: Any, onTap: () -> Unit, onPlay: () -> Unit) {
  */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.pager.PagerState) {
+private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.pager.PagerState, isVideo: (Int) -> Boolean, clock: VideoClock) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState(initialFirstVisibleItemIndex = pager.currentPage)
@@ -392,24 +401,49 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
     var userDriven by remember { mutableStateOf(false) }
     val itemW = 27.dp
     val gap = 4.dp
+    // The open video's tile is its frames, 180 dp wide (Samsung's)
+    val videoW = 180.dp
+    val itemPx = with(density) { itemW.toPx() }
+    val videoPx = with(density) { videoW.toPx() }
     val pitchPx = with(density) { (itemW + gap).toPx() }
+    val current = pager.currentPage
+    val openVideo = isVideo(current) && clock.uri == models.getOrNull(current)?.toString()
     LaunchedEffect(dragged) { if (dragged) userDriven = true }
-    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+    // Once a hand drag has fully stopped, the strip follows the photo again
+    LaunchedEffect(dragged, list.isScrollInProgress) { if (!dragged && !list.isScrollInProgress) userDriven = false }
+    // Samsung: 6 dp between the strip and the buttons' row
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp)) {
         val side = (maxWidth - itemW) / 2
-        // The photo moves the strip, unless the strip is being moved by hand
-        LaunchedEffect(pager) {
-            androidx.compose.runtime.snapshotFlow { pager.currentPage + pager.currentPageOffsetFraction }.collect { at ->
+        val centrePx = with(density) { maxWidth.toPx() } / 2f
+        // Where the strip's middle falls: (item, fraction across it)
+        fun middle(): Pair<Int, Float>? {
+            val info = list.layoutInfo
+            val it = info.visibleItemsInfo.firstOrNull { centrePx >= it.offset && centrePx < it.offset + it.size + gap.value * density.density }
+                ?: return null
+            return it.index to ((centrePx - it.offset) / it.size).coerceIn(0f, 1f)
+        }
+        // The photo (or the video's time) moves the strip, unless the strip is being moved by hand
+        LaunchedEffect(pager, openVideo) {
+            androidx.compose.runtime.snapshotFlow {
+                Triple(pager.currentPage + pager.currentPageOffsetFraction, clock.position, clock.duration)
+            }.collect { (at, pos, dur) ->
                 if (userDriven) return@collect
                 val i = kotlin.math.floor(at).toInt().coerceAtLeast(0)
-                list.scrollToItem(i, ((at - i) * pitchPx).toInt())
+                val settled = kotlin.math.abs(at - i) < 0.001f
+                if (settled && openVideo && dur > 0) {
+                    // The playhead stays in the middle; the frames slide under it
+                    list.scrollToItem(i, 0)
+                    list.scrollBy(pos.toFloat() / dur * videoPx - itemPx / 2f)
+                } else list.scrollToItem(i, ((at - i) * pitchPx).toInt())
             }
         }
-        // The strip moved by hand shows the photo in its middle straight away
+        // Moved by hand: over the open video it seeks; elsewhere the photo in the middle shows at once
         LaunchedEffect(list) {
-            androidx.compose.runtime.snapshotFlow { Triple(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset, list.isScrollInProgress) }.collect { (i, off, moving) ->
+            androidx.compose.runtime.snapshotFlow { Triple(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset, list.isScrollInProgress) }.collect { (_, _, moving) ->
                 if (!userDriven) return@collect
-                val target = (i + kotlin.math.round(off / pitchPx).toInt()).coerceIn(0, models.size - 1)
-                if (target != pager.currentPage) pager.scrollToPage(target)
+                val (i, f) = middle() ?: return@collect
+                if (i == pager.currentPage && openVideo) { if (clock.duration > 0) clock.seek((f * clock.duration).toLong()) }
+                else if (i != pager.currentPage) pager.scrollToPage(i.coerceIn(0, models.size - 1))
                 if (!moving) userDriven = false
             }
         }
@@ -417,30 +451,42 @@ private fun Filmstrip(models: List<Any>, pager: androidx.compose.foundation.page
             state = list,
             contentPadding = PaddingValues(horizontal = side),
             horizontalArrangement = Arrangement.spacedBy(gap),
-            flingBehavior = androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(list),
+            flingBehavior = if (openVideo) androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior() else androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(list),
             modifier = Modifier.height(44.dp)
         ) {
             itemsIndexed(models) { i, m ->
+                val wide = i == current && openVideo
+                if (wide) {
+                    Row(Modifier.size(videoW, 44.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF1F1F1F))) {
+                        videoFrames(m.toString(), 3).forEach {
+                            androidx.compose.foundation.Image(it.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.weight(1f).then(Modifier.fillMaxSize()))
+                        }
+                    }
+                    return@itemsIndexed
+                }
                 Box(
                     Modifier.size(itemW, 44.dp).graphicsLayer {
-                        // How close this thumbnail is to the middle: 1 there, 0 one step away or more
-                        val at = list.firstVisibleItemIndex + list.firstVisibleItemScrollOffset / pitchPx
-                        val d = i - at
-                        val near = (1f - kotlin.math.abs(d)).coerceIn(0f, 1f)
+                        // How close this thumbnail is to the middle (in steps): it grows there, the rest step aside
+                        val info = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == i }
+                        val d = if (info == null) 9f else (info.offset + info.size / 2f - centrePx) / pitchPx
+                        val near = if (openVideo) 0f else (1f - kotlin.math.abs(d)).coerceIn(0f, 1f)
                         val grow = 33f / 27f
                         scaleX = 1f + (grow - 1f) * near
                         scaleY = 1f + (grow - 1f) * near
-                        // Everything either side steps aside by the extra width the middle one takes
-                        translationX = (grow - 1f) * itemW.toPx() / 2f * d.coerceIn(-1f, 1f)
+                        translationX = if (openVideo) 0f else (grow - 1f) * itemW.toPx() / 2f * d.coerceIn(-1f, 1f)
                     }
                         .clickable { userDriven = false; scope.launch { pager.scrollToPage(i) } }
                 ) {
                     Box(Modifier.align(Alignment.Center).size(itemW, 36.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF1F1F1F))) {
                         Thumb(m.toString(), Modifier.fillMaxSize())
+                        if (isVideo(i)) Icon(com.composables.icons.materialsymbols.MaterialSymbols.RoundedFilled.Play_arrow, null, tint = Color.White,
+                            modifier = Modifier.align(Alignment.BottomStart).size(12.dp))
                     }
                 }
             }
         }
+        // Samsung's playhead: a white line through the middle over the open video's frames
+        if (openVideo) Box(Modifier.align(Alignment.Center).size(2.dp, 44.dp).graphicsLayer { scaleY = 48f / 44f }.background(Color.White, RoundedCornerShape(1.dp)))
     }
 }
 
@@ -509,6 +555,11 @@ fun MediaViewer(media: List<Media>, start: Int, closing: Boolean, onBack: () -> 
                     onDismissRequest = { ElvanMenuState.isMenuOpen = false; moreOpen = false },
                     items = listOf(
                         ElvanPopupMenuItem("Rename", MaterialSymbols.Rounded.Edit, { moreOpen = false; dialog = "rename" to page }),
+                        ElvanPopupMenuItem("Open in video player", Sym.Rounded.Play_circle, {
+                            moreOpen = false
+                            try { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "video/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null)) }
+                            catch (e: Exception) { Toast.makeText(context, "No video player found", Toast.LENGTH_SHORT).show() }
+                        }).takeIf { items[page].isVideo },
                         ElvanPopupMenuItem("Open in another app", MaterialSymbols.Rounded.OpenInNew, {
                             moreOpen = false
                             try { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_EDIT).setDataAndType(uri, if (items[page].isVideo) "video/*" else "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null)) }
@@ -542,7 +593,7 @@ fun MediaViewer(media: List<Media>, start: Int, closing: Boolean, onBack: () -> 
                             }
                         }),
                         ElvanPopupMenuItem("Print", MaterialSymbols.Rounded.Print, { moreOpen = false; printImage(context, uri) })
-                    )
+                    ).filterNotNull()
                 )
             }
         },

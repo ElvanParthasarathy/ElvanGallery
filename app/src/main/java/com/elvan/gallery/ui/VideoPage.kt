@@ -66,13 +66,21 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** The playing video's time, shared between its page (which plays it) and the filmstrip (which shows and seeks it). */
+class VideoClock {
+    var uri by mutableStateOf<String?>(null)
+    var position by mutableLongStateOf(0L)
+    var duration by mutableLongStateOf(0L)
+    var seek: (Long) -> Unit = {}
+}
+
 /**
- * A video in the viewer, as it should play: it starts by itself when its page is open; a capsule with
- * play/pause and the time sits over the picture with a capture button on the left and sound on the right; below, a strip
- * of the video's own frames is the seek bar (drag it), with a white playhead.
+ * A video in the viewer, as Samsung Gallery shows it (measured on a Galaxy A53): it starts by itself; a 30 dp capsule
+ * with play/pause and "00:02 / 00:16" sits centred above the filmstrip, a round capture button on the left and sound on
+ * the right. The filmstrip below is the seek bar: the video's frames with a white playhead.
  */
 @Composable
-fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, onTap: () -> Unit) {
+fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, clock: VideoClock, onTap: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { onTap() }) }, contentAlignment = Alignment.Center) {
@@ -86,95 +94,98 @@ fun VideoPage(uri: String, isCurrent: Boolean, chrome: Boolean, onTap: () -> Uni
         val player = remember(uri) {
             ExoPlayer.Builder(context).build().apply { setMediaItem(MediaItem.fromUri(uri)); prepare(); playWhenReady = true }
         }
-        DisposableEffect(player) { onDispose { player.release() } }
+        DisposableEffect(player) {
+            clock.uri = uri
+            clock.seek = { player.seekTo(it) }
+            onDispose { if (clock.uri == uri) { clock.uri = null; clock.seek = {} }; player.release() }
+        }
         var playing by remember { mutableStateOf(true) }
         var muted by remember { mutableStateOf(false) }
-        var position by remember { mutableLongStateOf(0L) }
-        var duration by remember { mutableLongStateOf(0L) }
         DisposableEffect(player) {
             val listener = object : Player.Listener { override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying } }
             player.addListener(listener)
             onDispose { player.removeListener(listener) }
         }
         LaunchedEffect(player) {
-            while (true) { position = player.currentPosition; duration = player.duration.coerceAtLeast(0L); delay(50) }
+            while (true) {
+                androidx.compose.runtime.withFrameMillis { }
+                clock.position = player.currentPosition
+                clock.duration = player.duration.coerceAtLeast(0L)
+            }
         }
         AndroidView(
             factory = { PlayerView(it).apply { useController = false; resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; this.player = player } },
             modifier = Modifier.fillMaxSize()
         )
-        // Samsung's video controls: play/pause beside a full-width seek line with the times under it; capture and sound below
-        if (chrome) Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).padding(bottom = 132.dp)
+        // The capsule's foot sits 136 dp above the bottom, 18 dp over the filmstrip, as Samsung's
+        if (chrome) Row(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 136.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.Top) {
-                RoundControl(if (playing) Sym.RoundedFilled.Pause else Sym.RoundedFilled.Play_arrow, if (playing) "Pause" else "Play") {
-                    if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
-                    if (playing) player.pause() else player.play()
-                }
-                Column(Modifier.weight(1f).padding(start = 10.dp, end = 10.dp)) {
-                    SeekLine(if (duration > 0) position.toFloat() / duration else 0f) { player.seekTo((it * duration).toLong()) }
-                    Row(Modifier.fillMaxWidth()) {
-                        Text(formatClock(position), color = Color.White, fontSize = 13.sp)
-                        Spacer(Modifier.weight(1f))
-                        Text(formatClock(duration), color = Color.White, fontSize = 13.sp)
+            RoundControl(Sym.Rounded.Screenshot_frame_2, "Capture") {
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) {
+                        val r = MediaMetadataRetriever()
+                        try {
+                            r.setDataSource(context, Uri.parse(uri))
+                            r.getFrameAtTime(player.currentPosition * 1000, MediaMetadataRetriever.OPTION_CLOSEST)?.let { saveEdited(context, it, "Captures", "Capture") } ?: false
+                        } catch (e: Exception) { false } finally { r.release() }
                     }
+                    Toast.makeText(context, if (ok) "Frame saved to Pictures/Captures" else "Could not capture", Toast.LENGTH_SHORT).show()
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                RoundControl(Sym.Rounded.Screenshot_frame, "Capture") {
-                    scope.launch {
-                        val ok = withContext(Dispatchers.IO) {
-                            val r = MediaMetadataRetriever()
-                            try {
-                                r.setDataSource(context, Uri.parse(uri))
-                                r.getFrameAtTime(player.currentPosition * 1000, MediaMetadataRetriever.OPTION_CLOSEST)?.let { saveEdited(context, it, "Captures", "Capture") } ?: false
-                            } catch (e: Exception) { false } finally { r.release() }
-                        }
-                        Toast.makeText(context, if (ok) "Frame saved to Pictures/Captures" else "Could not capture", Toast.LENGTH_SHORT).show()
-                    }
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Row(
+                    Modifier.height(30.dp).clip(CircleShape).background(Color(0x66000000))
+                        .border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape)
+                        .clickable {
+                            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
+                            if (playing) player.pause() else player.play()
+                        }.padding(start = 12.dp, end = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(if (playing) Sym.RoundedFilled.Pause else Sym.RoundedFilled.Play_arrow, if (playing) "Pause" else "Play", tint = Color.White, modifier = Modifier.size(18.dp))
+                    Text("  ${formatClock(clock.position)}", color = Color.White, fontSize = 13.sp)
+                    Text(" / ${formatClock(clock.duration)}", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
                 }
-                Spacer(Modifier.weight(1f))
-                RoundControl(if (muted) Sym.Rounded.Volume_off else Sym.Rounded.Volume_up, if (muted) "Sound off" else "Sound on") {
-                    muted = !muted; player.volume = if (muted) 0f else 1f
-                }
+            }
+            RoundControl(if (muted) Sym.Rounded.Volume_off else Sym.Rounded.Volume_up, if (muted) "Sound off" else "Sound on") {
+                muted = !muted; player.volume = if (muted) 0f else 1f
             }
         }
-    }
-}
-
-/** A thin white line with a round thumb; tap or drag anywhere on it to seek. */
-@Composable
-private fun SeekLine(progress: Float, onSeek: (Float) -> Unit) {
-    var dragging by remember { mutableStateOf<Float?>(null) }
-    val shown = dragging ?: progress
-    Canvas(Modifier.fillMaxWidth().height(36.dp).systemGestureExclusion().pointerInput(Unit) {
-        detectDragGestures(
-            onDragStart = { p -> dragging = (p.x / size.width).coerceIn(0f, 1f); onSeek(dragging!!) },
-            onDragEnd = { dragging = null },
-            onDragCancel = { dragging = null },
-            onDrag = { change, _ -> change.consume(); dragging = (change.position.x / size.width).coerceIn(0f, 1f); onSeek(dragging!!) }
-        )
-    }.pointerInput(Unit) { detectTapGestures { p -> onSeek((p.x / size.width).coerceIn(0f, 1f)) } }) {
-        val y = size.height / 2
-        val x = shown * size.width
-        drawLine(Color.White.copy(alpha = 0.35f), Offset(0f, y), Offset(size.width, y), 2.dp.toPx())
-        drawLine(Color.White, Offset(0f, y), Offset(x, y), 2.dp.toPx())
-        drawCircle(Color.White, 7.dp.toPx(), Offset(x, y))
     }
 }
 
 @Composable
 private fun RoundControl(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
     Box(
-        Modifier.size(36.dp).clip(CircleShape).background(Color(0x99303033)).clickable(onClick = onClick),
+        Modifier.size(30.dp).clip(CircleShape).background(Color(0x66000000)).border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
-    ) { Icon(icon, label, tint = Color.White, modifier = Modifier.size(20.dp)) }
+    ) { Icon(icon, label, tint = Color.White, modifier = Modifier.size(18.dp)) }
 }
 
 /** The "00:27" clock (two-digit minutes). */
-private fun formatClock(ms: Long): String {
+fun formatClock(ms: Long): String {
     val s = ms / 1000
     return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%02d:%02d".format(s / 60, s % 60)
 }
 
+/** A video's frames across [count] slots, for the filmstrip's wide video tile. */
+@Composable
+fun videoFrames(uri: String, count: Int): List<Bitmap> {
+    val context = LocalContext.current
+    val frames by produceState<List<Bitmap>>(emptyList(), uri) {
+        value = withContext(Dispatchers.IO) {
+            val r = MediaMetadataRetriever()
+            try {
+                r.setDataSource(context, Uri.parse(uri))
+                val ms = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                (0 until count).mapNotNull { i ->
+                    val at = (ms * 1000 * (i + 0.5) / count).toLong()
+                    if (Build.VERSION.SDK_INT >= 27) r.getScaledFrameAtTime(at, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 200, 200) else r.getFrameAtTime(at)
+                }
+            } catch (e: Exception) { emptyList() } finally { r.release() }
+        }
+    }
+    return frames
+}

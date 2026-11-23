@@ -403,14 +403,18 @@ private fun PinchCanvas(
         val to = maxOf(lastVisible(now, sNow), lastVisible(then, sThen))
         // Every photo owns its transition in both directions. Zooming out must not scale the page as one film:
         // each thumbnail shrinks and travels from its current rectangle to its own rectangle in the denser level.
-        for (i in from until to) {
+        // Zooming out, the new photos are painted first and fade in over the whole pinch, and the shrinking photos
+        // are painted over them, so they never slide underneath photos that look already settled
+        val zoomOut = target > columns
+        for (pass in if (zoomOut) 0..1 else 1..1) for (i in from until to) {
             val a = now.rect[i]
             val b = then.rect[i]
             // A photo that was off screen does not travel in from far away: it fades in where it will be,
             // filling the space the shrinking photos leave
             val wasOff = a.top - sNow > h || a.bottom - sNow < 0f
+            if (zoomOut && (pass == 0) != wasOff) continue
             val k = if (wasOff) 1f else p
-            val fade = if (wasOff) (p * 2.5f).coerceAtMost(1f) else 1f
+            val fade = if (!wasOff) 1f else if (zoomOut) p else (p * 2.5f).coerceAtMost(1f)
             val left = a.left + (b.left - a.left) * k
             val top = (a.top - sNow) + ((b.top - sThen) - (a.top - sNow)) * k
             val w = a.width + (b.width - a.width) * k

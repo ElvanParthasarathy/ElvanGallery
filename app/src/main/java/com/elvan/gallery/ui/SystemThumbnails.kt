@@ -21,7 +21,15 @@ fun thumbModel(uri: String?): Any? = if (uri != null && Build.VERSION.SDK_INT >=
 class SystemThumbFetcher(private val data: SystemThumb, private val options: Options) : Fetcher {
     override suspend fun fetch(): FetchResult {
         val px = (options.size.width as? Dimension.Pixels)?.px?.coerceAtLeast(48) ?: 320
-        val loaded = options.context.contentResolver.loadThumbnail(Uri.parse(data.uri), android.util.Size(px, px), null)
+        val resolver = options.context.contentResolver
+        val uri = Uri.parse(data.uri)
+        // The system thumbnail flattens see-through pictures onto black; those are decoded from the file, keeping alpha
+        val clear = resolver.getType(uri).let { it == "image/png" || it == "image/webp" || it == "image/gif" }
+        val loaded = if (clear) android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(resolver, uri)) { d, info, _ ->
+            val s = maxOf(1, minOf(info.size.width, info.size.height) / px)
+            d.setTargetSize((info.size.width / s).coerceAtLeast(1), (info.size.height / s).coerceAtLeast(1))
+            d.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+        } else resolver.loadThumbnail(uri, android.util.Size(px, px), null)
         // Moved to the GPU once here: a plain bitmap is copied to the GPU again whenever the GPU's cache drops it,
         // which happens constantly with hundreds of thumbnails moving in a pinch
         val bitmap = loaded.copy(android.graphics.Bitmap.Config.HARDWARE, false)?.also { loaded.recycle() } ?: loaded

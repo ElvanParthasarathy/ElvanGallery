@@ -189,7 +189,8 @@ fun MediaThumb(media: Media, selecting: Boolean, selected: Boolean, onClick: () 
     val colors = rememberShellColors()
     Box(
         modifier.then(if (square) Modifier.aspectRatio(1f) else Modifier.fillMaxHeight())
-            .clip(RoundedCornerShape(0.dp)).background(colors.surface)
+            // Samsung's tile grey: see-through pictures show their artwork on it, and an unloaded tile reads as a tile
+            .clip(RoundedCornerShape(0.dp)).background(if (colors.isDark) Color(0xFF1F1F1F) else Color(0xFFEDEDED))
             .thumbnail(media.uri, thumbPx)
             .then(if (trackHero) Modifier.onPlaced { HeroBounds.put(media.uri, it) } else Modifier)
             .semantics { contentDescription = media.name }

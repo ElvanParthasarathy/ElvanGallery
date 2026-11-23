@@ -67,6 +67,8 @@ class GridMorph(val slots: GridSlots, val scope: kotlinx.coroutines.CoroutineSco
     var landed: (() -> Boolean)? = null
     /** [scrollFor] worked out once per level for this pinch. */
     val sThen = HashMap<Int, Float>()
+    /** The page was at its very top as the pinch began (and has no layout model): the top stays put, not the fingers. */
+    var atTop = false
     /** Counts pinches: only the latest one may tidy up after itself. */
     var gen = 0
     /** Fingers on the grid now, and whether a pinch's ending is still playing: with neither, a pinch must be at rest. */
@@ -120,6 +122,7 @@ fun Modifier.pinchMorph(morph: GridMorph, grid: LazyGridState, columns: Int, lev
                             morph.focus = down.fold(androidx.compose.ui.geometry.Offset.Zero) { acc, ch -> acc + ch.position } / down.size.toFloat()
                             morph.sThen.clear(); morph.scrollFor = null; morph.anchorFy = 0f
                             morph.anchor = morph.begin?.invoke(morph.focus) ?: (grid.firstVisibleItemIndex - firstTile).coerceAtLeast(0)
+                            morph.atTop = morph.scrollFor == null && grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset == 0
                         }
                         pinched = true
                         zoom = (zoom * event.calculateZoom()).coerceIn(0.35f, 2.5f)
@@ -246,7 +249,10 @@ fun Modifier.morphTile(morph: GridMorph, index: Int, columns: Int): Modifier = g
         val sThen = morph.sThen[to]
         // Where the tile's top-left goes, relative to where it is laid out now
         val dx = (then.left - now.left) * p
-        val dy = if (morph.scrollFor != null && sThen != null) {
+        val dy = if (morph.atTop) {
+            // At the very top the heading stays put: each card goes from where it is laid out to where it will be
+            (then.top - now.top) * p
+        } else if (morph.scrollFor != null && sThen != null) {
             // Both levels on screen exactly: where the tile is now, and where the page will show it
             ((then.top - sThen) - (now.top - morph.sNow)) * p
         } else {

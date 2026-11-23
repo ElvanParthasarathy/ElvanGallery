@@ -146,7 +146,9 @@ private val albumSlots = GridSlots { index, columns, width, target ->
         val w = (width - 2 * side - (columns - 1) * gap) / columns
         val h = w * 1.2f
         val x = side + (index % columns) * (w + gap)
-        val y = (index / columns) * (h + gap)
+        // Measured from the heading above, as the grid lays it out: one gap first (a list row has none: its cover sits
+        // 6 dp into the row), so a pinch at the top moves each card to exactly where it lands
+        val y = gap + (index / columns) * (h + gap)
         Rect(x, y, x + w, y + h)
     }
 }

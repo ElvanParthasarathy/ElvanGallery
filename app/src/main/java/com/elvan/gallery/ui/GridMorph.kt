@@ -192,6 +192,27 @@ val CoverShape = object : androidx.compose.ui.graphics.Shape {
     }
 }
 
+/**
+ * The part of tile [index] (in its own pixels, [size] being its laid-out size) that a pinch shows right now: the
+ * in-between shape, centred; null when no pinch moves it. The picture is drawn cropped to exactly this, from the
+ * original photo, so each moment of the pinch shows what a card of that shape shows, and the last one what the landed
+ * card shows.
+ */
+fun GridMorph.cropRegion(index: Int, columns: Int, density: Density, size: androidx.compose.ui.geometry.Size): androidx.compose.ui.geometry.Rect? {
+    val to = target ?: return null
+    if (to == columns) return null
+    val p = progress.value
+    if (p == 0f || width <= 0f) return null
+    val now = with(slots) { density.slot(index, columns, width, false) }
+    val then = with(slots) { density.slot(index, to, width, true) }
+    val boxW = now.width + (then.width - now.width) * p
+    val boxH = now.height + (then.height - now.height) * p
+    val u = maxOf(boxW / now.width, boxH / now.height)
+    val cw = boxW / u
+    val ch = boxH / u
+    return androidx.compose.ui.geometry.Rect((size.width - cw) / 2f, (size.height - ch) / 2f, (size.width + cw) / 2f, (size.height + ch) / 2f)
+}
+
 /** How much a pinch is scaling tile [index] right now (1 when no pinch moves it). */
 fun GridMorph.tileScale(index: Int, columns: Int, density: Density): Float {
     val to = target ?: return 1f

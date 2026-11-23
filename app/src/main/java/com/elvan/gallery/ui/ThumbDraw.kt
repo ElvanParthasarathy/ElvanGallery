@@ -24,16 +24,22 @@ import kotlinx.coroutines.launch
  * one is fetched when that copy is smaller than [px]. A photo that was not in memory fades in over 240 ms instead of
  * popping onto the empty tile.
  */
-fun Modifier.thumbnail(uri: String, px: Int): Modifier = this then ThumbElement(uri, px)
+/**
+ * [region], when it gives a rect, is where the photo is drawn (centre-cropped to that rect's shape) instead of the whole
+ * node: a pinch uses it so a card changing shape shows what a card of each in-between shape would.
+ */
+fun Modifier.thumbnail(uri: String, px: Int, region: ((androidx.compose.ui.geometry.Size) -> androidx.compose.ui.geometry.Rect?)? = null): Modifier =
+    this then ThumbElement(uri, px, region)
 
-private data class ThumbElement(val uri: String, val px: Int) : ModifierNodeElement<ThumbNode>() {
-    override fun create() = ThumbNode(uri, px)
-    override fun update(node: ThumbNode) = node.set(uri, px)
+private data class ThumbElement(val uri: String, val px: Int, val region: ((androidx.compose.ui.geometry.Size) -> androidx.compose.ui.geometry.Rect?)?) : ModifierNodeElement<ThumbNode>() {
+    override fun create() = ThumbNode(uri, px).also { it.region = region }
+    override fun update(node: ThumbNode) { node.region = region; node.set(uri, px) }
 }
 
 private class ThumbNode(private var uri: String, private var px: Int) : Modifier.Node(), DrawModifierNode, CompositionLocalConsumerModifierNode {
     private var image: ImageBitmap? = null
     private var job: Disposable? = null
+    var region: ((androidx.compose.ui.geometry.Size) -> androidx.compose.ui.geometry.Rect?)? = null
     private val fade = androidx.compose.animation.core.Animatable(1f)
 
     override fun onAttach() = load()
@@ -73,12 +79,13 @@ private class ThumbNode(private var uri: String, private var px: Int) : Modifier
 
     override fun ContentDrawScope.draw() {
         image?.let { img ->
-            val dw = size.width.toInt().coerceAtLeast(1)
-            val dh = size.height.toInt().coerceAtLeast(1)
+            val r = region?.invoke(size)
+            val dw = (r?.width ?: size.width).toInt().coerceAtLeast(1)
+            val dh = (r?.height ?: size.height).toInt().coerceAtLeast(1)
             val scale = maxOf(dw / img.width.toFloat(), dh / img.height.toFloat())
             val sw = (dw / scale).toInt().coerceIn(1, img.width)
             val sh = (dh / scale).toInt().coerceIn(1, img.height)
-            drawImage(img, IntOffset((img.width - sw) / 2, (img.height - sh) / 2), IntSize(sw, sh), IntOffset.Zero, IntSize(dw, dh), alpha = fade.value)
+            drawImage(img, IntOffset((img.width - sw) / 2, (img.height - sh) / 2), IntSize(sw, sh), IntOffset((r?.left ?: 0f).toInt(), (r?.top ?: 0f).toInt()), IntSize(dw, dh), alpha = fade.value)
         }
         drawContent()
     }

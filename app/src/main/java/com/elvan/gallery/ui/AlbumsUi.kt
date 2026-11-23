@@ -188,6 +188,10 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
         }
     }
     val onLongClick = if (model.canRearrange) null else ({ model.toggle(entry.key) })
+    // During a pinch the cover is cropped from the photo to the card's shape at that moment (see GridMorph.cropRegion)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val crop: ((androidx.compose.ui.geometry.Size) -> androidx.compose.ui.geometry.Rect?)? =
+        remember(morph, index, columns, density) { morph?.let { m -> { s -> m.cropRegion(index, columns, density, s) } } }
     if (asList) {
         // List level: a rounded thumbnail with the name and count beside it
         Row(
@@ -198,7 +202,7 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
         ) {
             Box((if (morph != null) Modifier.zIndex(1f).morphTile(morph, index, columns) else Modifier).size(64.dp).clip(CoverShape).background(colors.surface)) {
                 when (entry) {
-                    is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize())
+                    is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize(), crop)
                     is AlbumGroup -> GroupCover(entry, colors)
                 }
                 if (model.selecting && !model.pickingGroup) ElvanCheckMark(on, colors.link, Color.White, 20.dp, Modifier.align(Alignment.TopStart).padding(4.dp))
@@ -227,7 +231,7 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
         )
     ) {
         when (entry) {
-            is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize())
+            is Album -> Thumb(entry.media.firstOrNull()?.uri, Modifier.fillMaxSize(), crop)
             is AlbumGroup -> GroupCover(entry, colors)
         }
         // The name and its shade fade during a pinch rather than shrink with the cover
@@ -235,6 +239,9 @@ private fun AlbumTile(model: AlbumsModel, entry: AlbumEntry, nav: Navigator, mod
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)))))
         // The names keep their real text size while a pinch scales the cover (Samsung's never grow or shrink)
         Column(Modifier.align(Alignment.BottomCenter).graphicsLayer {
+            // During a pinch the names keep their own texture, so redrawing the picture each frame does not redraw them
+            compositingStrategy = if (morph?.target != null) androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                else androidx.compose.ui.graphics.CompositingStrategy.Auto
             alpha = morph?.labelAlpha() ?: 1f
             val u = morph?.tileScale(index, columns, this) ?: 1f
             scaleX = 1f / u; scaleY = 1f / u
@@ -270,9 +277,9 @@ private fun GroupCover(group: AlbumGroup, colors: ShellColors) {
 }
 
 @Composable
-fun Thumb(uri: String?, modifier: Modifier) {
+fun Thumb(uri: String?, modifier: Modifier, region: ((androidx.compose.ui.geometry.Size) -> androidx.compose.ui.geometry.Rect?)? = null) {
     // The grid's own drawing: the same copy in memory as the Pictures tab shows at once, a missing one fades in
-    Box(if (uri != null) modifier.thumbnail(uri, 360) else modifier)
+    Box(if (uri != null) modifier.thumbnail(uri, 360, region) else modifier)
 }
 
 /** The album being carried to a new place, where the finger is, and where on the tile it was taken. */
